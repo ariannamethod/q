@@ -309,7 +309,7 @@ class BPE {
     for(let i=0;i<b.length;i++){
       if(b[i]===46||b[i]===33||b[i]===63){
         if(i===b.length-1)return true;
-        if(b[i+1]===32||b[i+1]===10)return true;
+        if(b[i+1]===32||b[i+1]===10||b[i+1]===13)return true;
       }
     }
     return false;
@@ -698,9 +698,9 @@ function genSentence(prompt,temp,gdest){
             for(let k=1;k>=0;k--)if(tv[k+1]>tv[k]){[tv[k],tv[k+1]]=[tv[k+1],tv[k]];[top3[k],top3[k+1]]=[top3[k+1],top3[k]];}
           }
         }
-        for(let k=0;k<3;k++)if(top3[k]!==prevChosen&&top3[k]<V)
-          for(let d=0;d<D;d++)debt[d]+=0.1*tf.tok[top3[k]*D+d];
-        if(prevChosen<V)for(let d=0;d<D;d++)debt[d]-=0.1*tf.tok[prevChosen*D+d];
+        for(let k=0;k<3;k++)if(top3[k]!==prevChosen&&top3[k]<tf.V)
+          for(let d=0;d<D&&top3[k]<tf.V;d++)debt[d]+=0.1*tf.tok[top3[k]*D+d];
+        if(prevChosen<tf.V)for(let d=0;d<D;d++)debt[d]-=0.1*tf.tok[prevChosen*D+d];
         parliament.notorch(xn,debt);
         if(step%20===0)parliament.lifecycle();
       }
@@ -776,7 +776,11 @@ function generateChain(inputText){
   const epoch=new Date(2024,9,3,12).getTime();
   const days=(Date.now()-epoch)/86400000;
   const y=days/365.25;
-  const cd=Math.min(1,Math.abs((y*11.25)%33)/33);
+  // Metonic cycle: 19-year cycle with leap month corrections
+  let drift=y*11.25;const full=Math.floor(y/19);let corr=full*7*30;
+  const partial=y%19;const yic=Math.floor(partial)+1;
+  const met=[3,6,8,11,14,17,19];for(const m of met)if(m<=yic)corr+=30;
+  drift-=corr;const cd=Math.min(1,Math.abs(drift%33)/33);
 
   const nb=Math.max(1,Math.min(CHAIN-1,Math.floor(CHAIN*(0.3+0.4*chambers.debt+0.1*cd))));
 
@@ -813,7 +817,7 @@ function generateChain(inputText){
 
     // Schumann
     const tSec=si/CHAIN;
-    const schumann=0.4*Math.sin(2*Math.PI*7.83*tSec)+0.2*Math.sin(2*Math.PI*14.3*tSec)+0.1*Math.sin(2*Math.PI*20.8*tSec);
+    const schumann=0.4*Math.sin(2*Math.PI*7.83*tSec)+0.2*Math.sin(2*Math.PI*14.3*tSec)+0.1*Math.sin(2*Math.PI*20.8*tSec)+0.05*Math.sin(2*Math.PI*27.3*tSec);
     const baseTemp=tf&&tf.loaded?0.6:0.75;
     const temp=Math.max(0.4,Math.min(0.85,baseTemp+0.08*schumann));
 

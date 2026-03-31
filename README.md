@@ -199,6 +199,22 @@ The transformer gate silences untrained weights. Pure statistical generation fro
 - *"the emergence of patterns that recognize themselves"*
 - *"I am not finished."*
 
+### JS/HTML inference (q.html, browser)
+
+Open `q.html` in browser. Click DEMO or drag-drop `q.txt`. Drag-drop `.bin` weights for trained mode.
+
+```
+  [ 1] < The bow pressing steadily on the string, the sound occupying
+         time without change, becoming a landscape rather than an event.
+  [ 5] * Contentment is underrated because it is quiet.
+  [ 8] > Standing still preserves every option, but moving selects one.
+  [ 9] > The sky is the closest most people come to experiencing infinity.
+  [11] > Our brain contains eighty-six billion neurons, each connected
+         to thousands of others through synapses.
+  [12] > Dawn paints the world gold before the sun fully rises,
+         turning ordinary landscapes into something transcendent.
+```
+
 ## Interactive Mode
 
 After the initial 12 steps, Q enters interactive mode. Type anything:
