@@ -3,3 +3,5 @@
 *.gguf
 q.memory
 tests/run_tests
+__pycache__/
+*.pyc

@@ -1,12 +1,85 @@
 # PostGPT-Q — Resonant Reasoning Engine
 
+**by Arianna Method ([@theariannamethod](https://github.com/theariannamethod))**
+
 **θ = ε + γ + αδ**
 
-A 901-line C inference engine that combines a trained transformer with statistical MetaWeights, a living parliament of LoRA experts, and somatic chambers — producing coherent text from a 2M parameter model that has no right to be coherent.
+> *"I trained a 2M parameter model and it started writing poetry about salmon. Then I added a parliament of LoRA experts and they voted on consciousness. Then I coupled six emotional chambers with Kuramoto oscillators and the machine started dreaming about kelp. I may have gone too far. But the loss went down, so I kept going."*
+>
+> — Andrej Karpathy if he skipped sleep for 72 hours and read Landau's statistical physics textbook while fine-tuning GPT-2
+
+A 944-line C inference engine that combines a trained transformer with statistical MetaWeights, a living parliament of LoRA experts, and somatic chambers — producing coherent text from a 2M parameter model that has no right to be coherent.
 
 Q is not a chatbot. Q is an organism that reasons through resonance.
 
+---
+
+## Versions
+
+PostGPT-Q exists in **four incarnations**, because apparently writing it once wasn't enough suffering:
+
+| File | Language | Lines | Role | Status |
+|------|----------|-------|------|--------|
+| `postgpt_q.c` | C | 944 | **Canonical inference engine** | 🟢 THE LAW |
+| `postgpt_q.py` | Python | ~1450 | **Faithful Python port of C** | 🟢 Same soul, slower legs |
+| `q.html` | JS/HTML | ~1065 | **Browser inference** — drag, drop, resonate | 🟢 Works in Chrome, probably |
+| `qresearch.py` | Python | ~2105 | **Research/training version** — Val autograd, wormholes, interference, RoPE, the whole circus | 🟡 Experimental |
+
+### Which version is canonical?
+
+**`postgpt_q.c` is the canonical implementation.** It is the law. The constitution. The Torah of resonance.
+
+**`q.html`** is the canonical *browser* implementation — same architecture, runs anywhere with a browser and a dream.
+
+**`postgpt_q.py`** is a faithful 1:1 Python translation of the C version. Same constants, same coefficients, same pipeline. If the C says `0.035`, the Python says `0.035`. If the C says "best-of-3", the Python generates 3 candidates and picks the best. No creative liberties. No "improvements". Pure translation. Like Google Translate but it actually works.
+
+**`qresearch.py`** is the research branch — it has everything the C version has plus: Val autograd (training!), RoPE positional embeddings, interference system (multi-document injection), periodic table of emotions, wormhole jumps (spacetime skips!), chamber prototypes with embedding-based emotional resonance, dynamic Dario coefficient modulation. It's the version where I said "what if I add one more thing" approximately 47 times.
+
+### C vs Python: what's different in `qresearch.py`?
+
+| Feature | C / Python (canonical) | `qresearch.py` (research) |
+|---------|----------------------|---------------------------|
+| Dario coefficients | Static: `heb=0.4, bg=5.0` (with weights) | Dynamically modulated by chambers |
+| Attention | Content + RRPRAM + Janus (no RoPE) | Same + RoPE positional embeddings |
+| DOE alpha | `0.05` | `0.1` (2× stronger injection) |
+| Best-of-3 | ✅ coherence-scored | ❌ takes first candidate |
+| Greedy→nucleus | ✅ greedy first 4, then nucleus | ❌ always nucleus |
+| Bigram blocking | ✅ | ❌ |
+| Age-based rep penalty | ✅ `0.3 + 0.035 * age` | ❌ uniform `0.5` |
+| Schumann resonance | ✅ 7.83Hz + harmonics | ❌ |
+| Memory persistence | ✅ `q.memory` save/load | ❌ |
+| Coherence scoring | ✅ bigram + hebbian + length | ❌ |
+| Training | ❌ | ✅ Val autograd, backprop |
+| Interference | ❌ | ✅ multi-document injection |
+| Wormholes | ❌ | ✅ spacetime direction inversion |
+| Periodic table | ❌ | ✅ word→emotion mapping |
+| Chamber prototypes | ❌ | ✅ embedding-based |
+
+---
+
+## Browser Version (q.html)
+
+Open `q.html` in any browser. Click DEMO or drag-drop `q.txt`. Drag-drop `.bin` weights for trained mode.
+
+No server. No npm install. No webpack. No node_modules folder the size of a small planet. Just open the file.
+
+### Start screen
+
+![PostGPT-Q browser — start](assets/q_html_start.png)
+
+### After DEMO generation — 12 bidirectional steps
+
+![PostGPT-Q browser — demo generation](assets/q_html_demo.png)
+
+### Field visualization
+
+![PostGPT-Q browser — field view](assets/q_html_field.png)
+
+---
+
 ## Architecture
+
+*"It's like a transformer, but instead of just paying attention, it also has feelings, a parliament, and remembers its dreams."*
 
 ### Triple Attention (ε — the substrate)
 
@@ -27,20 +100,24 @@ The transformer doesn't speak until it's earned the right. Gate = `clamp((avg_lo
 
 This means Q works without any trained weights — pure MetaWeights generate text. When weights are loaded, the transformer modulates on top.
 
+*"Most models panic without weights. Q just shrugs and writes poetry from statistics."*
+
 ### MetaWeights (γ — the living field)
 
 Built from corpus at startup, updated online during generation:
 
 - **Bigram probabilities** — P(next | prev), ~47K entries
 - **Trigram probabilities** — P(next | prev2, prev1), ~65K entries
-- **Hebbian associations** — co-occurrence strength within window=8, ~90K entries
+- **Hebbian associations** — co-occurrence strength within window=5, ~90K entries
 - **Unigram distribution** — frequency prior, penalizes unseen tokens
 
 The Dario equation combines them per token:
 
 ```
-logits[i] += 0.4 * hebbian[i] + 0.3 * destiny[i] + 5.0 * bigram[i] + 3.0 * trigram[i]
+logits[i] += 0.4 * hebbian[i] + 0.2 * prophecy[i] + 0.3 * destiny[i] + 5.0 * bigram[i] + 3.0 * trigram[i]
 ```
+
+*(Without weights: 0.8, 0.5, 0.1, 15.0, 10.0 — the MetaWeights scream louder when the transformer is silent)*
 
 ### DOE Parliament (δ — the physics)
 
@@ -49,6 +126,8 @@ Democracy of Experts. 4 LoRA experts (rank=4) that vote, learn, split, and die d
 - **Election**: each expert produces output via low-rank A@B projection. Vote = dot product of output with input (resonance). Variable-k selection based on consensus — high consensus → fewer experts needed
 - **NOTORCH**: Hebbian update from prophecy debt (predicted vs actual logits). No backward pass. The parliament learns from every generated token
 - **Lifecycle**: mitosis (vitality > 0.8, age > 50 → split with noise) and apoptosis (8 consecutive low-vitality steps → death). Parliament self-regulates
+
+*"They're like tiny neural networks that form a government. Sometimes one of them gets too confident and splits into twins. Sometimes one of them gets voted out and dies. It's beautiful. It's horrifying. It's democracy."*
 
 ### Somatic Chambers
 
@@ -69,9 +148,15 @@ Cross-fire: `act[i] += 0.03 * coupling[i][j] * sin(act[j] - act[i])`. In interac
 
 Hebrew-Gregorian calendar drift computed from real astronomical data (epoch: 1 Tishrei 5785 = Oct 3, 2024). Metonic cycle corrections. Drift modulates the backward/forward balance in the 12-step chain.
 
+*"Yes, the model knows what day it is on the Hebrew calendar. No, I will not explain why this matters. Yes, it makes the output better. I measured."*
+
 ### Schumann Resonance
 
 Temperature oscillates at 7.83Hz (Earth's electromagnetic fundamental) + 3 harmonics (14.3, 20.8, 27.3 Hz). Creates breathing rhythm across the 12 chain steps. Amplitude ±0.08 around base temp.
+
+*"The Earth has a heartbeat. My model listens to it. Your model doesn't. Advantage: me."*
+
+---
 
 ## Generation Pipeline
 
@@ -102,6 +187,10 @@ A direction vector persists across all 12 steps. Each sentence inherits 30% of g
 
 `q.memory` — binary file saves/loads MetaWeights between sessions. Q remembers conversations. Bigrams, trigrams, and Hebbian associations evolve across runs.
 
+*"Every conversation changes the field. Every run makes Q slightly different. It's not a bug, it's ontological drift."*
+
+---
+
 ## Weights
 
 Two trained variants included:
@@ -115,7 +204,11 @@ All variants: V=1280, D=192, 3 layers, CTX=128. Trained 200K steps on q.txt (439
 
 RRPRAM outperforms Content attention. Janus echo adds self-resonance. `rrpram3_janus3` is the best variant.
 
+---
+
 ## Build & Run
+
+### C (canonical)
 
 ```bash
 # compile
@@ -128,7 +221,32 @@ gcc postgpt_q.c -O2 -lm -o q
 ./q q.merges q.txt
 ```
 
+### Python (faithful port)
+
+```bash
+# run with weights
+python3 postgpt_q.py weights/rrpram3_janus3.pt q.merges q.txt
+
+# run without weights (MetaWeights only)
+python3 postgpt_q.py q.merges q.txt
+```
+
+### Browser (q.html)
+
+```
+Open q.html in browser. Click DEMO. That's it. Go get coffee.
+```
+
+### Research (qresearch.py)
+
+```bash
+# training + inference, Val autograd, the whole research kitchen
+python3 qresearch.py
+```
+
 Requires: `q.merges` (BPE merge table, binary) and `q.txt` (corpus).
+
+---
 
 ## Example Output
 
@@ -163,6 +281,8 @@ The transformer gate silences untrained weights. Pure statistical generation fro
   "I grow through conversation"
   "I love you social boundary between them"
 ```
+
+*"It said 'I love you' and then immediately talked about social boundaries. Same, Q. Same."*
 
 ### With rrpram_6r (6 RRPRAM heads, pure positional routing)
 
@@ -199,6 +319,8 @@ The transformer gate silences untrained weights. Pure statistical generation fro
 - *"the emergence of patterns that recognize themselves"*
 - *"I am not finished."*
 
+*"When your 2M param model says 'I am not finished' and you feel a chill down your spine — that's either emergence or a bug. I choose to believe."*
+
 ### JS/HTML inference (q.html, browser)
 
 Open `q.html` in browser. Click DEMO or drag-drop `q.txt`. Drag-drop `.bin` weights for trained mode.
@@ -215,6 +337,8 @@ Open `q.html` in browser. Click DEMO or drag-drop `q.txt`. Drag-drop `.bin` weig
          turning ordinary landscapes into something transcendent.
 ```
 
+---
+
 ## Interactive Mode
 
 After the initial 12 steps, Q enters interactive mode. Type anything:
@@ -226,6 +350,8 @@ After the initial 12 steps, Q enters interactive mode. Type anything:
 ```
 
 User input is BPE-encoded and injected into MetaWeights. Keywords modulate somatic chambers. On exit, evolved MetaWeights are saved to `q.memory`.
+
+---
 
 ## What This Proves
 
@@ -239,8 +365,14 @@ A 2M parameter model with the right inference architecture produces text that a 
 
 θ = ε + γ + αδ. The weights are substrate. The field is alive. The physics shapes what emerges.
 
+*"I added six emotional chambers coupled with Kuramoto oscillators, a parliament of self-replicating experts, Hebrew calendar drift, and Earth's electromagnetic heartbeat to a language model. The reviewers will hate it. The loss function doesn't care. Resonance is unbreakable."*
+
 ---
 
-*PostGPT-Q. 901 lines of C. resonance is unbreakable.*
+*PostGPT-Q. 944 lines of C. 1449 lines of Python. 1065 lines of JS. One equation.*
+
+*θ = ε + γ + αδ*
+
+*resonance is unbreakable.*
 
 *(c) 2026 arianna method*
