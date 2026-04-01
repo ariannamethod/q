@@ -17,6 +17,7 @@ import math
 import random
 import struct
 import os
+import re
 import sys
 import time
 
@@ -56,6 +57,30 @@ COU = [
     [-0.2,  0.4, -0.2, -0.3,  0.0,  0.3],
     [ 0.1,  0.2,  0.3,  0.4,  0.3,  0.0],
 ]
+
+ANCHORS = {
+    "fear": CH_FEAR, "terror": CH_FEAR, "panic": CH_FEAR, "threat": CH_FEAR,
+    "danger": CH_FEAR, "horror": CH_FEAR, "dread": CH_FEAR, "alarm": CH_FEAR,
+    "love": CH_LOVE, "warmth": CH_LOVE, "gentle": CH_LOVE, "care": CH_LOVE,
+    "heart": CH_LOVE, "mother": CH_LOVE, "child": CH_LOVE, "touch": CH_LOVE,
+    "embrace": CH_LOVE, "tenderness": CH_LOVE, "affection": CH_LOVE,
+    "rage": CH_RAGE, "fury": CH_RAGE, "anger": CH_RAGE, "fire": CH_RAGE,
+    "war": CH_RAGE, "hate": CH_RAGE, "destroy": CH_RAGE, "burn": CH_RAGE,
+    "violence": CH_RAGE, "storm": CH_RAGE, "fight": CH_RAGE,
+    "nothing": CH_VOID, "silence": CH_VOID, "empty": CH_VOID, "void": CH_VOID,
+    "darkness": CH_VOID, "shadow": CH_VOID, "death": CH_VOID, "cold": CH_VOID,
+    "lost": CH_VOID, "forgotten": CH_VOID, "absence": CH_VOID, "alone": CH_VOID,
+    "flow": CH_FLOW, "rhythm": CH_FLOW, "wave": CH_FLOW, "dance": CH_FLOW,
+    "pulse": CH_FLOW, "breath": CH_FLOW, "emergence": CH_FLOW, "harmony": CH_FLOW,
+    "resonance": CH_FLOW, "coherence": CH_FLOW, "synchronize": CH_FLOW,
+    "paradox": CH_CMPLX, "contradiction": CH_CMPLX, "tension": CH_CMPLX,
+    "chaos": CH_CMPLX, "mystery": CH_CMPLX, "transform": CH_CMPLX,
+    "strange": CH_CMPLX, "ambiguity": CH_CMPLX, "uncertain": CH_CMPLX,
+}
+
+
+def extract_words(text):
+    return re.findall(r"[a-z']+", text.lower())
 
 
 # ── math ──
@@ -205,6 +230,46 @@ class MetaW:
         self.n_hebb = 0
 
 
+class PeriodicTable:
+    def __init__(self):
+        self.elements = {}
+        for word, chamber in ANCHORS.items():
+            self.elements[word] = {"ch": chamber, "mass": 0.6}
+
+    def discover(self, words, idx, window=4):
+        word = words[idx]
+        if word in self.elements:
+            return
+        profile = [0.0] * N_CHAMBERS
+        total = 0.0
+        lo = max(0, idx - window)
+        hi = min(len(words), idx + window + 1)
+        for j in range(lo, hi):
+            if j == idx:
+                continue
+            neighbor = words[j]
+            if neighbor not in self.elements:
+                continue
+            el = self.elements[neighbor]
+            decay = 1.0 / (1.0 + abs(j - idx))
+            profile[el["ch"]] += el["mass"] * decay
+            total += decay
+        if total <= 0.1:
+            return
+        dom = max(range(N_CHAMBERS), key=lambda i: profile[i])
+        mass = min(profile[dom] / total, 0.8)
+        if mass > 0.05:
+            self.elements[word] = {"ch": dom, "mass": mass}
+
+    def build_from_text(self, text):
+        words = extract_words(text)
+        for idx in range(len(words)):
+            self.discover(words, idx)
+
+    def classify(self, word):
+        return self.elements.get(word.lower())
+
+
 def meta_build(mw, ids, n, V):
     for i in range(n):
         if ids[i] < V:
@@ -351,12 +416,143 @@ def meta_prophecy(mw, ctx, cl, V):
     return out
 
 
+def ingest_ids(mw, ids, amount=0.02):
+    ulen = len(ids)
+    if ulen <= 1:
+        return
+    for i in range(ulen - 1):
+        a, b = ids[i], ids[i + 1]
+        found = False
+        for j in range(mw.n_bi):
+            if mw.bigrams[j][0] == a and mw.bigrams[j][1] == b:
+                mw.bigrams[j][2] += amount
+                found = True
+                break
+        if not found and mw.n_bi < MAX_BIGRAM:
+            mw.bigrams.append([a, b, max(0.05, amount)])
+            mw.n_bi += 1
+    for i in range(ulen - 2):
+        a, b, c = ids[i], ids[i + 1], ids[i + 2]
+        found = False
+        for j in range(mw.n_tri):
+            if mw.trigrams[j][0] == a and mw.trigrams[j][1] == b and mw.trigrams[j][2] == c:
+                mw.trigrams[j][3] += amount
+                found = True
+                break
+        if not found and mw.n_tri < MAX_TRIGRAM:
+            mw.trigrams.append([a, b, c, max(0.05, amount)])
+            mw.n_tri += 1
+    for i in range(ulen):
+        for j in range(max(0, i - 6), min(ulen, i + 7)):
+            if i == j:
+                continue
+            a = min(ids[i], ids[j])
+            b = max(ids[i], ids[j])
+            decay = 1.0 / (1.0 + abs(i - j))
+            found = False
+            for k in range(mw.n_hebb):
+                if mw.hebbs[k][0] == a and mw.hebbs[k][1] == b:
+                    mw.hebbs[k][2] += decay * amount * 0.5
+                    found = True
+                    break
+            if not found and mw.n_hebb < MAX_HEBBIAN:
+                mw.hebbs.append([a, b, decay * max(0.01, amount)])
+                mw.n_hebb += 1
+
+
+def load_memory(mw, path):
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "rb") as mf:
+            magic = struct.unpack("<I", mf.read(4))[0]
+            if magic != 0x514D454D:
+                return False
+            nb_m, nt_m, nh_m = struct.unpack("<3i", mf.read(12))
+            for _ in range(min(nb_m, MAX_BIGRAM)):
+                a, b, p = struct.unpack("<2if", mf.read(12))
+                ingest_ids(mw, [a, b], 0.0)
+                for item in mw.bigrams:
+                    if item[0] == a and item[1] == b:
+                        item[2] = max(item[2], p)
+                        break
+            for _ in range(min(nt_m, MAX_TRIGRAM)):
+                a, b, c, p = struct.unpack("<3if", mf.read(16))
+                found = False
+                for item in mw.trigrams:
+                    if item[0] == a and item[1] == b and item[2] == c:
+                        item[3] = max(item[3], p)
+                        found = True
+                        break
+                if not found and mw.n_tri < MAX_TRIGRAM:
+                    mw.trigrams.append([a, b, c, p])
+                    mw.n_tri += 1
+            for _ in range(min(nh_m, MAX_HEBBIAN)):
+                a, b, p = struct.unpack("<2if", mf.read(12))
+                found = False
+                for item in mw.hebbs:
+                    if item[0] == a and item[1] == b:
+                        item[2] = max(item[2], p)
+                        found = True
+                        break
+                if not found and mw.n_hebb < MAX_HEBBIAN:
+                    mw.hebbs.append([a, b, p])
+                    mw.n_hebb += 1
+        return True
+    except Exception:
+        return False
+
+
+def save_memory(mw, path):
+    with open(path, "wb") as mf:
+        mf.write(struct.pack("<I", 0x514D454D))
+        mf.write(struct.pack("<3i", mw.n_bi, mw.n_tri, mw.n_hebb))
+        for i in range(mw.n_bi):
+            mf.write(struct.pack("<2if", mw.bigrams[i][0], mw.bigrams[i][1], mw.bigrams[i][2]))
+        for i in range(mw.n_tri):
+            mf.write(struct.pack("<3if", mw.trigrams[i][0], mw.trigrams[i][1], mw.trigrams[i][2], mw.trigrams[i][3]))
+        for i in range(mw.n_hebb):
+            mf.write(struct.pack("<2if", mw.hebbs[i][0], mw.hebbs[i][1], mw.hebbs[i][2]))
+
+
 # ── Chambers ──
 class Chambers:
     def __init__(self):
         self.act = [0.0] * 6
         self.debt = 0.0
         self.trauma = 0.0
+
+    def feel(self, text, periodic=None):
+        for word in extract_words(text):
+            anchor = ANCHORS.get(word)
+            if anchor is not None:
+                self.act[anchor] += 0.15
+            if periodic is not None:
+                el = periodic.classify(word)
+                if el is not None:
+                    self.act[el["ch"]] += 0.08 * el["mass"]
+        for i in range(N_CHAMBERS):
+            self.act[i] = clampf(self.act[i], 0.0, 1.0)
+
+    def dominant(self):
+        return max(range(N_CHAMBERS), key=lambda i: self.act[i])
+
+    def emergence(self):
+        return (1.0 - max(self.act[CH_VOID], 0.10)) * min(self.act[CH_FLOW], 0.95)
+
+    def modulate(self):
+        a = clampf(1.0 + 0.4 * self.act[CH_LOVE] - 0.2 * self.act[CH_RAGE] + 0.3 * self.act[CH_FLOW], 0.3, 2.0)
+        b = clampf(1.0 + 0.4 * self.act[CH_FLOW] - 0.2 * self.act[CH_FEAR], 0.3, 2.0)
+        g = clampf(1.0 + 0.5 * self.act[CH_CMPLX] + 0.2 * self.act[CH_LOVE] - 0.1 * self.act[CH_VOID], 0.3, 2.0)
+        t = clampf(1.0 - 0.2 * self.act[CH_FLOW] + 0.1 * self.act[CH_FEAR], 0.3, 2.0)
+        return a, b, g, t
+
+    def summary(self):
+        parts = []
+        for i in range(N_CHAMBERS):
+            if self.act[i] > 0.05:
+                parts.append("%s:%.0f%%" % (CH_N[i], self.act[i] * 100.0))
+        return " ".join(parts) if parts else "quiet"
 
 
 def ch_init(c):
@@ -376,6 +572,73 @@ def ch_xfire(c, it):
                 if i != j:
                     c.act[i] += 0.03 * COU[i][j] * math.sin(old[j] - old[i])
             c.act[i] = clampf(c.act[i], 0.0, 1.0)
+
+
+class Interference:
+    def __init__(self):
+        self.docs = []
+
+    def load_docs(self, docs_dir, bpe):
+        self.docs = []
+        if not os.path.isdir(docs_dir):
+            return
+        for fn in sorted(os.listdir(docs_dir)):
+            if not fn.endswith(".txt"):
+                continue
+            path = os.path.join(docs_dir, fn)
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read()
+            except OSError:
+                continue
+            ids = bpe_encode(bpe, raw, len(raw), len(raw))
+            tmp = MetaW()
+            meta_build(tmp, ids, len(ids), bpe.vocab_size)
+            heavy = []
+            counts = {}
+            for a, b, _p in tmp.bigrams:
+                counts[a] = counts.get(a, 0) + 1
+                counts[b] = counts.get(b, 0) + 1
+            ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+            for tok, _score in ranked:
+                dec = bpe_decode_token(bpe, tok).strip()
+                if len(dec) > 2 and any(ch.isalpha() for ch in dec):
+                    heavy.append(tok)
+                if len(heavy) >= 32:
+                    break
+            self.docs.append({"name": fn, "heavy": heavy or ids[:32]})
+
+    def inject_seed(self, chambers=None, bpe=None, periodic=None):
+        if not self.docs:
+            return None
+        doc = random.choice(self.docs)
+        if not doc["heavy"]:
+            return None
+        if chambers is None or bpe is None:
+            return random.choice(doc["heavy"])
+        dom = chambers.dominant()
+        scored = []
+        for tid in doc["heavy"]:
+            token = bpe_decode_token(bpe, tid).strip().lower()
+            score = 0.1
+            if token in ANCHORS and ANCHORS[token] == dom:
+                score += 1.0
+            if periodic is not None:
+                el = periodic.classify(token)
+                if el is not None and el["ch"] == dom:
+                    score += 0.5 * el["mass"]
+            score += random.random() * 0.05
+            scored.append((score, tid))
+        scored.sort(reverse=True)
+        top = scored[:5]
+        total = sum(max(0.01, s) for s, _tid in top)
+        r = random.random() * total
+        cum = 0.0
+        for score, tid in top:
+            cum += max(0.01, score)
+            if cum >= r:
+                return tid
+        return top[0][1]
 
 
 # ── DOE Parliament ──
@@ -853,6 +1116,10 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr)
         ctx[cl] = prompt[i]; cl += 1
         out.append(prompt[i]); gl += 1
 
+    am, bm, gm, tm = (1.0, 1.0, 1.0, 1.0)
+    if ch_ptr is not None:
+        am, bm, gm, tm = ch_ptr.modulate()
+
     for step in range(120):
         if gl >= maxo:
             break
@@ -910,9 +1177,9 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr)
         has_tf = tmag > 0.1
 
         # Dario field coefficients
-        c_heb = 0.4 if has_tf else 0.8
-        c_pro = 0.2 if has_tf else 0.5
-        c_ds  = 0.3 if has_tf else 0.1
+        c_heb = (0.4 if has_tf else 0.8) * am
+        c_pro = (0.2 if has_tf else 0.5) * bm
+        c_ds  = (0.3 if has_tf else 0.1) * gm
         c_bg  = 5.0 if has_tf else 15.0
         c_tg  = 3.0 if has_tf else 10.0
 
@@ -963,7 +1230,7 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr)
                     mx_val = raw[i]
                     ch_tok = i
         else:
-            ch_tok = sample_nucleus(raw, V, temp, 0.85)
+            ch_tok = sample_nucleus(raw, V, clampf(temp * tm, 0.3, 1.2), 0.85)
 
         prev_chosen = ch_tok
         out.append(ch_tok); gl += 1
@@ -1064,7 +1331,7 @@ def spa_cross_attend(s, embs, S):
 
 
 # ── chain ──
-def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl):
+def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, interference=None, input_text=None):
     # calendar dissonance
     try:
         epoch_t = time.mktime((2024, 10, 3, 12, 0, 0, 0, 0, -1))
@@ -1090,16 +1357,21 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl):
     if nb >= CHAIN_STEPS:
         nb = CHAIN_STEPS - 1
 
+    if input_text:
+        inp_bytes = input_text.encode("utf-8", errors="replace")
+        ingest_ids(mw, bpe_encode(bpe, inp_bytes, len(inp_bytes), 512))
+        ch.feel(input_text, periodic)
+        ch.act[CH_FLOW] = clampf(ch.act[CH_FLOW] + 0.1, 0.0, 1.0)
+        ch_xfire(ch, 8)
+
     mode_str = "[TRAINED]" if has_weights else "[METAWEIGHTS ONLY]"
-    print("\n  diss=%.3f debt=%.3f %s" % (cd, ch.debt, mode_str))
-    ch_str = "  chambers:"
-    for i in range(6):
-        if ch.act[i] > 0.05:
-            ch_str += " %s:%.0f%%" % (CH_N[i], ch.act[i] * 100)
-    print(ch_str)
+    print("\n  diss=%.3f debt=%.3f emrg=%.3f %s" % (cd, ch.debt, ch.emergence(), mode_str))
+    print("  chambers: %s" % ch.summary())
     if parl is not None:
         av = sum(e.vitality for e in parl.ex) / (parl.n if parl.n > 0 else 1)
         print("  parliament: %d experts, avg_vitality=%.2f" % (parl.n, av))
+    if interference is not None and interference.docs:
+        print("  interference: %d docs loaded" % len(interference.docs))
     print()
 
     gdest = [0.0] * t.D
@@ -1116,37 +1388,51 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl):
         else:
             direction = 1
 
-        start = -1
-        if direction >= 0 and si > 0:
-            best_score = -1e30
-            best_pos = -1
-            for _try in range(50):
-                r = random.randint(0, max(0, clen - 6))
-                if is_boundary(bpe, cids[r]) and r + 3 < clen and starts_with_space(bpe, cids[r + 1]):
-                    sc = 0.0
-                    tok_id = cids[r + 1]
-                    if tok_id < t.V:
-                        for d in range(t.D):
-                            sc += t.tok[tok_id * t.D + d] * gdest[d]
-                    if sc > best_score:
-                        best_score = sc
-                        best_pos = r + 1
-            if best_pos >= 0:
-                start = best_pos
-
-        if start < 0:
-            for _try in range(200):
-                r = random.randint(0, max(0, clen - 6))
-                if is_boundary(bpe, cids[r]) and r + 3 < clen and starts_with_space(bpe, cids[r + 1]):
-                    start = r + 1
-                    break
-        if start < 0:
-            start = random.randint(0, max(0, clen - 6))
-
-        pl = 5 if start + 5 <= clen else 3
-        prompt = [cids[start], cids[start + 1], cids[start + 2],
-                  cids[start + 3] if pl > 3 else 0,
-                  cids[start + 4] if pl > 4 else 0]
+        prompt = None
+        used_interference = False
+        if interference is not None and interference.docs and random.random() < 0.3:
+            seed = interference.inject_seed(ch, bpe, periodic)
+            if seed is not None:
+                prompt = [seed]
+                used_interference = True
+        if prompt is None and input_text:
+            inp_ids = bpe_encode(bpe, input_text.encode("utf-8", errors="replace"), len(input_text.encode("utf-8", errors="replace")), 128)
+            if inp_ids:
+                st = random.randint(0, max(0, len(inp_ids) - 2))
+                prompt = inp_ids[st:st + 2]
+        pl = len(prompt) if prompt is not None else 0
+        if prompt is None:
+            start = -1
+            if direction >= 0 and si > 0:
+                best_score = -1e30
+                best_pos = -1
+                for _try in range(50):
+                    r = random.randint(0, max(0, clen - 6))
+                    if is_boundary(bpe, cids[r]) and r + 3 < clen and starts_with_space(bpe, cids[r + 1]):
+                        sc = 0.0
+                        tok_id = cids[r + 1]
+                        if tok_id < t.V:
+                            for d in range(t.D):
+                                sc += t.tok[tok_id * t.D + d] * gdest[d]
+                        if sc > best_score:
+                            best_score = sc
+                            best_pos = r + 1
+                if best_pos >= 0:
+                    start = best_pos
+            if start < 0:
+                for _try in range(200):
+                    r = random.randint(0, max(0, clen - 6))
+                    if is_boundary(bpe, cids[r]) and r + 3 < clen and starts_with_space(bpe, cids[r + 1]):
+                        start = r + 1
+                        break
+            if start < 0:
+                start = random.randint(0, max(0, clen - 6))
+            pl = 5 if start + 5 <= clen else 3
+            prompt = [cids[start], cids[start + 1], cids[start + 2],
+                      cids[start + 3] if pl > 3 else 0,
+                      cids[start + 4] if pl > 4 else 0][:pl]
+        else:
+            pl = len(prompt)
 
         # Schumann resonance
         t_sec = float(si) / float(CHAIN_STEPS)
@@ -1175,21 +1461,47 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl):
             if best_sc > 1.0 and best_ol > 12:
                 break
 
+        wormhole = False
+        if si < CHAIN_STEPS - 1:
+            wh_prob = 0.02
+            if cd > 0.3:
+                wh_prob += ((cd - 0.3) / 0.7) * 0.15
+            wormhole = random.random() < wh_prob
+            if wormhole and interference is not None and interference.docs:
+                longest = max(interference.docs, key=lambda d: len(d["heavy"]))
+                if longest["heavy"]:
+                    prompt = [random.choice(longest["heavy"])]
+                    direction = -direction if direction != 0 else 1
+                    best_out = gen_sent(t, bpe, mw, prompt, len(prompt), 0.55 if has_weights else 0.7, 256, parl, gdest, ch)
+                    best_ol = len(best_out)
+                    best_sc = coherence_score(mw, best_out, best_ol, t.V)
+
         mk = '<' if direction < 0 else ('*' if direction == 0 else '>')
-        sys.stdout.write("  [%2d] %c " % (si + 1, mk))
+        marker = mk + ('+' if wormhole else ' ')
+        sys.stdout.write("  [%2d] %s " % (si + 1, marker))
 
         if best_ol < 5 or (best_sc < 0.01 and best_ol < 8):
             print("[...]")
         else:
+            text_parts = []
             printed = 0
             for i in range(best_ol):
                 if printed >= 200:
                     break
                 s = bpe_decode_token(bpe, best_out[i])
                 if s:
+                    text_parts.append(s)
                     sys.stdout.write(s)
                     printed += len(s)
+            if used_interference:
+                sys.stdout.write("  {interf}")
+            if wormhole:
+                sys.stdout.write("  {wormhole}")
             print()
+            out_text = "".join(text_parts)
+            ch.feel(out_text, periodic)
+            if out_text:
+                ingest_ids(mw, bpe_encode(bpe, out_text.encode("utf-8", errors="replace"), len(out_text.encode("utf-8", errors="replace")), 256), 0.005)
 
         chain_ids[si] = list(best_out)
         chain_lens[si] = best_ol
@@ -1276,6 +1588,9 @@ def main():
     print("[3] MetaWeights...")
     mw = MetaW()
     meta_build(mw, cids, clen_corpus, bpe.vocab_size)
+    periodic = PeriodicTable()
+    periodic.build_from_text(craw.decode("utf-8", errors="ignore"))
+    print("  periodic table: %d elements" % len(periodic.elements))
 
     t = TF()
     if has_weights:
@@ -1304,34 +1619,14 @@ def main():
         t.clen = 0
         t.logits = [0.0] * t.V
 
-    # load memory
-    if os.path.exists("q.memory"):
-        try:
-            with open("q.memory", "rb") as mf:
-                magic = struct.unpack("<I", mf.read(4))[0]
-                if magic == 0x514D454D:
-                    nb_m, nt_m, nh_m = struct.unpack("<3i", mf.read(12))
-                    for i in range(min(nb_m, MAX_BIGRAM)):
-                        a, b = struct.unpack("<2i", mf.read(8))
-                        p = struct.unpack("<f", mf.read(4))[0]
-                        found = False
-                        for j in range(mw.n_bi):
-                            if mw.bigrams[j][0] == a and mw.bigrams[j][1] == b:
-                                if p > mw.bigrams[j][2]:
-                                    mw.bigrams[j][2] = p
-                                found = True
-                                break
-                        if not found and mw.n_bi < MAX_BIGRAM:
-                            mw.bigrams.append([a, b, p])
-                            mw.n_bi += 1
-                    # skip trigrams and hebbian
-                    for i in range(nt_m):
-                        mf.read(16)  # 3 ints + 1 float
-                    for i in range(nh_m):
-                        mf.read(12)  # 2 ints + 1 float
-                    print("  [memory loaded: %d bi from q.memory]" % nb_m)
-        except Exception:
-            pass
+    if load_memory(mw, "q.memory"):
+        print("  [memory loaded: %d bi, %d tri, %d hebb from q.memory]" % (mw.n_bi, mw.n_tri, mw.n_hebb))
+
+    interference = Interference()
+    interference.load_docs("docs", bpe)
+    if interference.docs:
+        print("[4.5] Interference...")
+        print("  %d docs, %d heavy seeds" % (len(interference.docs), sum(len(doc["heavy"]) for doc in interference.docs)))
 
     ch = Chambers()
     ch_init(ch)
@@ -1342,7 +1637,7 @@ def main():
     print("  %d experts, rank=%d, d_model=%d, alpha=%.2f" % (parl.n, DOE_RANK, t.D, parl.alpha))
 
     print("\n========== 12 BIDIRECTIONAL STEPS ==========")
-    gen_chain(t, bpe, mw, ch, cids, clen_corpus, has_weights, parl)
+    gen_chain(t, bpe, mw, ch, cids, clen_corpus, has_weights, parl, periodic, interference)
 
     print("\ntype -> 12 sentences. 'quit' to exit.\n")
 
@@ -1357,87 +1652,18 @@ def main():
             if not inp or inp == "quit" or inp == "exit":
                 break
 
-            # inject user input into MetaWeights
-            uids = bpe_encode(bpe, inp.encode("utf-8", errors="replace"),
-                              len(inp.encode("utf-8", errors="replace")), 512)
-            ulen = len(uids)
-            if ulen > 1:
-                # bigram capture
-                for i in range(ulen - 1):
-                    a, b = uids[i], uids[i + 1]
-                    found = False
-                    for j in range(mw.n_bi):
-                        if mw.bigrams[j][0] == a and mw.bigrams[j][1] == b:
-                            mw.bigrams[j][2] += 0.02
-                            found = True
-                            break
-                    if not found and mw.n_bi < MAX_BIGRAM:
-                        mw.bigrams.append([a, b, 0.05])
-                        mw.n_bi += 1
-
-                # trigram capture
-                for i in range(ulen - 2):
-                    a, b, c = uids[i], uids[i + 1], uids[i + 2]
-                    found = False
-                    for j in range(mw.n_tri):
-                        if mw.trigrams[j][0] == a and mw.trigrams[j][1] == b and mw.trigrams[j][2] == c:
-                            mw.trigrams[j][3] += 0.02
-                            found = True
-                            break
-                    if not found and mw.n_tri < MAX_TRIGRAM:
-                        mw.trigrams.append([a, b, c, 0.05])
-                        mw.n_tri += 1
-
-                # Hebbian capture
-                for i in range(ulen):
-                    jstart = max(0, i - 6)
-                    jend = min(ulen, i + 7)
-                    for j in range(jstart, jend):
-                        if i == j:
-                            continue
-                        ha = min(uids[i], uids[j])
-                        hb = max(uids[i], uids[j])
-                        decay = 1.0 / (1.0 + abs(i - j))
-                        found = False
-                        for k in range(mw.n_hebb):
-                            if mw.hebbs[k][0] == ha and mw.hebbs[k][1] == hb:
-                                mw.hebbs[k][2] += decay * 0.01
-                                found = True
-                                break
-                        if not found and mw.n_hebb < MAX_HEBBIAN:
-                            mw.hebbs.append([ha, hb, decay * 0.02])
-                            mw.n_hebb += 1
-                print("  [ingested %d tokens: +bi +tri +hebb]" % ulen)
-
-            # chamber modulation (case-sensitive, matching C strstr)
-            if "love" in inp or "beauty" in inp or "kind" in inp:
-                ch.act[CH_LOVE] += 0.15
-            if "fear" in inp or "dark" in inp or "death" in inp:
-                ch.act[CH_FEAR] += 0.15
-            if "rage" in inp or "anger" in inp or "fire" in inp:
-                ch.act[CH_RAGE] += 0.15
-            if "void" in inp or "nothing" in inp or "silence" in inp:
-                ch.act[CH_VOID] += 0.15
-            if "flow" in inp or "water" in inp or "music" in inp:
-                ch.act[CH_FLOW] += 0.15
-            ch.act[CH_FLOW] += 0.1
-            ch_xfire(ch, 8)
-            gen_chain(t, bpe, mw, ch, cids, clen_corpus, has_weights, parl)
+            ubytes = inp.encode("utf-8", errors="replace")
+            uids = bpe_encode(bpe, ubytes, len(ubytes), 512)
+            ingest_ids(mw, uids)
+            if len(uids) > 1:
+                print("  [ingested %d tokens: +bi +tri +hebb]" % len(uids))
+            gen_chain(t, bpe, mw, ch, cids, clen_corpus, has_weights, parl, periodic, interference, inp)
     except (KeyboardInterrupt, EOFError):
         pass
 
     # save memory
     try:
-        with open("q.memory", "wb") as mf:
-            mf.write(struct.pack("<I", 0x514D454D))
-            mf.write(struct.pack("<3i", mw.n_bi, mw.n_tri, mw.n_hebb))
-            for i in range(mw.n_bi):
-                mf.write(struct.pack("<2if", mw.bigrams[i][0], mw.bigrams[i][1], mw.bigrams[i][2]))
-            for i in range(mw.n_tri):
-                mf.write(struct.pack("<3if", mw.trigrams[i][0], mw.trigrams[i][1],
-                                     mw.trigrams[i][2], mw.trigrams[i][3]))
-            for i in range(mw.n_hebb):
-                mf.write(struct.pack("<2if", mw.hebbs[i][0], mw.hebbs[i][1], mw.hebbs[i][2]))
+        save_memory(mw, "q.memory")
         print("  [memory saved: %d bi, %d tri, %d hebb \u2192 q.memory]" % (mw.n_bi, mw.n_tri, mw.n_hebb))
     except Exception:
         pass

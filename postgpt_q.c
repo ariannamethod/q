@@ -19,6 +19,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdint.h>
+#include <ctype.h>
 
 #define MAX_VOCAB    1280
 #define MAX_CTX      128
@@ -31,6 +32,9 @@
 #define CHAIN_STEPS  12
 #define TOP_K        15
 #define QPTQ_MAGIC   0x51505451
+#define MAX_PERIODIC 4096
+#define MAX_INTERF_DOCS 32
+#define MAX_HEAVY 32
 
 /* ── math ── */
 static float clampf(float x, float lo, float hi) { return x<lo?lo:x>hi?hi:x; }
@@ -214,6 +218,27 @@ static void meta_prophecy(const MetaW *mw, const int *ctx, int cl, float *out, i
     if(mx>0) for(int i=0;i<V;i++) out[i]/=mx;
 }
 
+static void ingest_ids(MetaW *mw, const int *ids, int n, float amount){
+    if(n<=1) return;
+    for(int i=0;i<n-1;i++){
+        int a=ids[i],b=ids[i+1],found=0;
+        for(int j=0;j<mw->n_bi;j++) if(mw->bigrams[j].a==a&&mw->bigrams[j].b==b){mw->bigrams[j].prob+=amount;found=1;break;}
+        if(!found&&mw->n_bi<MAX_BIGRAM){mw->bigrams[mw->n_bi].a=a;mw->bigrams[mw->n_bi].b=b;mw->bigrams[mw->n_bi].prob=amount>0.05f?amount:0.05f;mw->n_bi++;}
+    }
+    for(int i=0;i<n-2;i++){
+        int a=ids[i],b=ids[i+1],c=ids[i+2],found=0;
+        for(int j=0;j<mw->n_tri;j++) if(mw->trigrams[j].a==a&&mw->trigrams[j].b==b&&mw->trigrams[j].c==c){mw->trigrams[j].prob+=amount;found=1;break;}
+        if(!found&&mw->n_tri<MAX_TRIGRAM){mw->trigrams[mw->n_tri].a=a;mw->trigrams[mw->n_tri].b=b;mw->trigrams[mw->n_tri].c=c;mw->trigrams[mw->n_tri].prob=amount>0.05f?amount:0.05f;mw->n_tri++;}
+    }
+    for(int i=0;i<n;i++) for(int j=(i-6>0?i-6:0);j<n&&j<=i+6;j++){
+        if(i==j) continue;
+        int a=ids[i]<ids[j]?ids[i]:ids[j],b=ids[i]<ids[j]?ids[j]:ids[i],found=0;
+        float decay=1.0f/(1.0f+abs(i-j));
+        for(int k=0;k<mw->n_hebb;k++) if(mw->hebbs[k].a==a&&mw->hebbs[k].b==b){mw->hebbs[k].str+=decay*(amount*0.5f);found=1;break;}
+        if(!found&&mw->n_hebb<MAX_HEBBIAN){mw->hebbs[mw->n_hebb].a=a;mw->hebbs[mw->n_hebb].b=b;mw->hebbs[mw->n_hebb].str=decay*(amount>0.01f?amount:0.01f);mw->n_hebb++;}
+    }
+}
+
 /* ── Chambers ── */
 enum{CH_FEAR=0,CH_LOVE,CH_RAGE,CH_VOID,CH_FLOW,CH_CMPLX};
 static const char *CH_N[]={"FEAR","LOVE","RAGE","VOID","FLOW","CMPLX"};
@@ -222,6 +247,28 @@ static const float COU[6][6]={
     {0,-0.3f,0.5f,0.4f,-0.2f,0.1f},{-0.3f,0,-0.4f,-0.5f,0.5f,0.2f},
     {0.5f,-0.3f,0,0.2f,-0.3f,0.3f},{0.4f,-0.5f,0.3f,0,-0.3f,0.4f},
     {-0.2f,0.4f,-0.2f,-0.3f,0,0.3f},{0.1f,0.2f,0.3f,0.4f,0.3f,0}};
+typedef struct{const char *word; int chamber;}Anchor;
+static const Anchor ANCHORS[]={
+    {"fear",CH_FEAR},{"terror",CH_FEAR},{"panic",CH_FEAR},{"threat",CH_FEAR},
+    {"danger",CH_FEAR},{"horror",CH_FEAR},{"dread",CH_FEAR},{"alarm",CH_FEAR},
+    {"love",CH_LOVE},{"warmth",CH_LOVE},{"gentle",CH_LOVE},{"care",CH_LOVE},
+    {"heart",CH_LOVE},{"mother",CH_LOVE},{"child",CH_LOVE},{"touch",CH_LOVE},
+    {"embrace",CH_LOVE},{"tenderness",CH_LOVE},{"affection",CH_LOVE},
+    {"rage",CH_RAGE},{"fury",CH_RAGE},{"anger",CH_RAGE},{"fire",CH_RAGE},
+    {"war",CH_RAGE},{"hate",CH_RAGE},{"destroy",CH_RAGE},{"burn",CH_RAGE},
+    {"violence",CH_RAGE},{"storm",CH_RAGE},{"fight",CH_RAGE},
+    {"nothing",CH_VOID},{"silence",CH_VOID},{"empty",CH_VOID},{"void",CH_VOID},
+    {"darkness",CH_VOID},{"shadow",CH_VOID},{"death",CH_VOID},{"cold",CH_VOID},
+    {"lost",CH_VOID},{"forgotten",CH_VOID},{"absence",CH_VOID},{"alone",CH_VOID},
+    {"flow",CH_FLOW},{"rhythm",CH_FLOW},{"wave",CH_FLOW},{"dance",CH_FLOW},
+    {"pulse",CH_FLOW},{"breath",CH_FLOW},{"emergence",CH_FLOW},{"harmony",CH_FLOW},
+    {"resonance",CH_FLOW},{"coherence",CH_FLOW},{"synchronize",CH_FLOW},
+    {"paradox",CH_CMPLX},{"contradiction",CH_CMPLX},{"tension",CH_CMPLX},
+    {"chaos",CH_CMPLX},{"mystery",CH_CMPLX},{"transform",CH_CMPLX},
+    {"strange",CH_CMPLX},{"ambiguity",CH_CMPLX},{"uncertain",CH_CMPLX}
+};
+typedef struct{char word[32]; int chamber; float mass;}PeriodicElement;
+typedef struct{PeriodicElement elements[MAX_PERIODIC]; int n;}PeriodicTable;
 typedef struct{float act[6];float debt;float trauma;}Chambers;
 
 static void ch_init(Chambers *c){memset(c,0,sizeof(*c));c->act[CH_LOVE]=0.2f;c->act[CH_FLOW]=0.15f;c->trauma=0;}
@@ -231,6 +278,116 @@ static void ch_xfire(Chambers *c, int it){
             for(int j=0;j<6;j++) if(i!=j) c->act[i]+=0.03f*COU[i][j]*sinf(old[j]-old[i]);
             c->act[i]=clampf(c->act[i],0,1);}
     }
+}
+static int periodic_find(const PeriodicTable *pt, const char *word){
+    for(int i=0;i<pt->n;i++) if(strcmp(pt->elements[i].word,word)==0) return i;
+    return -1;
+}
+static void periodic_add(PeriodicTable *pt, const char *word, int chamber, float mass){
+    if(!word||!word[0]||pt->n>=MAX_PERIODIC||periodic_find(pt,word)>=0) return;
+    strncpy(pt->elements[pt->n].word,word,sizeof(pt->elements[pt->n].word)-1);
+    pt->elements[pt->n].word[sizeof(pt->elements[pt->n].word)-1]=0;
+    pt->elements[pt->n].chamber=chamber;
+    pt->elements[pt->n].mass=mass;
+    pt->n++;
+}
+static void periodic_init(PeriodicTable *pt){
+    memset(pt,0,sizeof(*pt));
+    for(size_t i=0;i<sizeof(ANCHORS)/sizeof(ANCHORS[0]);i++) periodic_add(pt,ANCHORS[i].word,ANCHORS[i].chamber,0.6f);
+}
+static void periodic_build_from_text(PeriodicTable *pt, const char *text){
+    char words[2048][32]; int n=0,wi=0; char cur[32]={0};
+    for(const char *p=text;*p&&n<2048;p++){
+        if(isalpha((unsigned char)*p)||*p=='\''){ if(wi<31) cur[wi++]=(char)tolower((unsigned char)*p); }
+        else if(wi>0){ cur[wi]=0; strcpy(words[n++],cur); wi=0; }
+    }
+    if(wi>0&&n<2048){cur[wi]=0; strcpy(words[n++],cur);}
+    for(int i=0;i<n&&pt->n<MAX_PERIODIC;i++){
+        if(periodic_find(pt,words[i])>=0) continue;
+        float profile[6]={0},total=0;
+        for(int j=(i-4>0?i-4:0);j<n&&j<=i+4;j++){
+            if(i==j) continue;
+            int idx=periodic_find(pt,words[j]);
+            if(idx<0) continue;
+            float decay=1.0f/(1.0f+abs(i-j));
+            profile[pt->elements[idx].chamber]+=pt->elements[idx].mass*decay;
+            total+=decay;
+        }
+        if(total>0.1f){
+            int dom=0; for(int k=1;k<6;k++) if(profile[k]>profile[dom]) dom=k;
+            float mass=profile[dom]/total; if(mass>0.05f) periodic_add(pt,words[i],dom,mass>0.8f?0.8f:mass);
+        }
+    }
+}
+static void ch_feel_text(Chambers *c, const char *text, const PeriodicTable *pt){
+    char cur[32]={0}; int wi=0;
+    for(const char *p=text;;p++){
+        int ch=*p;
+        if(ch&&(isalpha((unsigned char)ch)||ch=='\'')){ if(wi<31) cur[wi++]=(char)tolower((unsigned char)ch); continue; }
+        if(wi>0){
+            cur[wi]=0;
+            for(size_t i=0;i<sizeof(ANCHORS)/sizeof(ANCHORS[0]);i++) if(strcmp(cur,ANCHORS[i].word)==0) c->act[ANCHORS[i].chamber]+=0.15f;
+            if(pt){ int idx=periodic_find(pt,cur); if(idx>=0) c->act[pt->elements[idx].chamber]+=0.08f*pt->elements[idx].mass; }
+            wi=0;
+        }
+        if(!ch) break;
+    }
+    for(int i=0;i<6;i++) c->act[i]=clampf(c->act[i],0,1);
+}
+static int ch_dominant(const Chambers *c){int dom=0;for(int i=1;i<6;i++) if(c->act[i]>c->act[dom]) dom=i;return dom;}
+static float ch_emergence(const Chambers *c){float v=c->act[CH_VOID]>0.10f?c->act[CH_VOID]:0.10f; float f=c->act[CH_FLOW]<0.95f?c->act[CH_FLOW]:0.95f; return (1.0f-v)*f;}
+static void ch_modulate(const Chambers *c, float *a, float *b, float *g, float *t){
+    *a=clampf(1.0f+0.4f*c->act[CH_LOVE]-0.2f*c->act[CH_RAGE]+0.3f*c->act[CH_FLOW],0.3f,2.0f);
+    *b=clampf(1.0f+0.4f*c->act[CH_FLOW]-0.2f*c->act[CH_FEAR],0.3f,2.0f);
+    *g=clampf(1.0f+0.5f*c->act[CH_CMPLX]+0.2f*c->act[CH_LOVE]-0.1f*c->act[CH_VOID],0.3f,2.0f);
+    *t=clampf(1.0f-0.2f*c->act[CH_FLOW]+0.1f*c->act[CH_FEAR],0.3f,2.0f);
+}
+static void ch_summary(const Chambers *c, char *buf, int sz){
+    int pos=0; buf[0]=0;
+    for(int i=0;i<6;i++) if(c->act[i]>0.05f) pos+=snprintf(buf+pos,sz-pos,"%s%s:%.0f%%",pos?" ":"",CH_N[i],c->act[i]*100.0f);
+    if(pos==0) snprintf(buf,sz,"quiet");
+}
+
+typedef struct{char name[64]; int heavy[MAX_HEAVY]; int n_heavy;}InterferenceDoc;
+typedef struct{InterferenceDoc docs[MAX_INTERF_DOCS]; int n_docs;}Interference;
+static void interf_load(Interference *itf, const char *docs_dir, const BPE *bpe){
+    static const char *doc_names[]={
+        "bach_counterpoint.txt","bioluminescence.txt","byzantine_iconography.txt",
+        "dario_essay.txt","dickens_russian_lit.txt","mycorrhizal_networks.txt","polynesian_navigation.txt"
+    };
+    memset(itf,0,sizeof(*itf));
+    for(size_t di=0;di<sizeof(doc_names)/sizeof(doc_names[0])&&itf->n_docs<MAX_INTERF_DOCS;di++){
+        char path[256]; snprintf(path,sizeof(path),"%s/%s",docs_dir,doc_names[di]);
+        FILE *f=fopen(path,"rb"); if(!f) continue;
+        fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+        uint8_t *raw=malloc(sz>0?sz:1); fread(raw,1,sz,f); fclose(f);
+        int *ids=malloc((sz>0?sz:1)*sizeof(int)); int n=bpe_encode(bpe,raw,(int)sz,ids,(int)sz);
+        MetaW tmp; meta_build(&tmp,ids,n,bpe->vocab_size);
+        InterferenceDoc *doc=&itf->docs[itf->n_docs];
+        strncpy(doc->name,doc_names[di],sizeof(doc->name)-1);
+        for(int i=0;i<tmp.n_bi&&doc->n_heavy<MAX_HEAVY;i++){
+            int tok=tmp.bigrams[i].a,dup=0; char buf[64]; bpe_decode_token(bpe,tok,buf,sizeof(buf));
+            for(int j=0;j<doc->n_heavy;j++) if(doc->heavy[j]==tok){dup=1;break;}
+            int alpha=0; for(int j=0;buf[j];j++) if(isalpha((unsigned char)buf[j])) alpha++;
+            if(!dup&&alpha>2) doc->heavy[doc->n_heavy++]=tok;
+        }
+        if(doc->n_heavy>0) itf->n_docs++;
+        free(ids); free(raw);
+    }
+}
+static int interf_seed(const Interference *itf, const Chambers *c, const BPE *bpe, const PeriodicTable *pt){
+    if(!itf||itf->n_docs<=0) return -1;
+    const InterferenceDoc *doc=&itf->docs[rand()%itf->n_docs];
+    if(doc->n_heavy<=0) return -1;
+    int dom=ch_dominant(c),best=doc->heavy[rand()%doc->n_heavy]; float best_score=-1e30f;
+    for(int i=0;i<doc->n_heavy&&i<MAX_HEAVY;i++){
+        char buf[64]; float sc=((float)rand()/RAND_MAX)*0.05f; bpe_decode_token(bpe,doc->heavy[i],buf,sizeof(buf));
+        for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
+        for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(buf,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) sc+=1.0f;
+        if(pt){ int idx=periodic_find(pt,buf); if(idx>=0&&pt->elements[idx].chamber==dom) sc+=0.5f*pt->elements[idx].mass; }
+        if(sc>best_score){best_score=sc;best=doc->heavy[i];}
+    }
+    return best;
 }
 
 /* ── DOE Parliament — Democracy of Experts ── */
@@ -539,6 +696,8 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
     float *prev_logits=calloc(V,sizeof(float));
     int prev_chosen=-1;
     int ctx[MAX_SEQ],cl=0,gl=0;
+    float am=1.0f,bm=1.0f,gm=1.0f,tm=1.0f;
+    if(ch_ptr) ch_modulate(ch_ptr,&am,&bm,&gm,&tm);
     for(int i=0;i<plen&&i<t->CTX-1;i++){tf_forward(t,prompt[i],i);ctx[cl++]=prompt[i];out[gl++]=prompt[i];}
     for(int step=0;step<120&&gl<maxo;step++){
         int pos=cl-1; if(pos>=t->CTX-1) break;
@@ -585,8 +744,8 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         float tmag=0;for(int v=0;v<V;v++) tmag+=fabsf(raw[v]);tmag/=(V>0?V:1);
         int has_tf=tmag>0.1f;
         /* Dario field: B + α·H + β·P + γ·D + T — stronger without weights */
-        float c_heb=has_tf?0.4f:0.8f, c_pro=has_tf?0.2f:0.5f;
-        float c_ds=has_tf?0.3f:0.1f, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
+        float c_heb=(has_tf?0.4f:0.8f)*am, c_pro=(has_tf?0.2f:0.5f)*bm;
+        float c_ds=(has_tf?0.3f:0.1f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
         for(int i=0;i<V;i++){
             float bg=meta_bi(mw,ctx[cl-1],i);
             float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
@@ -617,7 +776,7 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
             }else{ch=sample_nucleus(raw,V,0.5f,0.7f);}
         }else if(step<4){
             ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
-        }else{ch=sample_nucleus(raw,V,temp,0.85f);}
+        }else{ch=sample_nucleus(raw,V,clampf(temp*tm,0.3f,1.2f),0.85f);}
         free(raw);
         prev_chosen=ch;
         out[gl++]=ch; ctx[cl++]=ch;
@@ -707,7 +866,8 @@ static void spa_cross_attend(const SPACtx *s, float embs[][SPA_DIM], int S, floa
 
 /* ── chain ── */
 static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
-                      const int *cids, int clen, int has_weights, Parliament *parl){
+                      const int *cids, int clen, int has_weights, Parliament *parl,
+                      const PeriodicTable *pt, const Interference *itf, const char *input_text){
     /* calendar dissonance */
     struct tm e={0};e.tm_year=2024-1900;e.tm_mon=9;e.tm_mday=3;e.tm_hour=12;
     time_t epoch=mktime(&e); float days=epoch>0?(float)difftime(time(NULL),epoch)/86400.0f:0;
@@ -719,10 +879,20 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
     int nb=(int)(CHAIN_STEPS*(0.3f+0.4f*ch->debt+0.1f*cd));
     if(nb<1)nb=1;if(nb>=CHAIN_STEPS)nb=CHAIN_STEPS-1;
 
-    printf("\n  diss=%.3f debt=%.3f %s\n  chambers:",cd,ch->debt,has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]");
-    for(int i=0;i<6;i++) if(ch->act[i]>0.05f) printf(" %s:%.0f%%",CH_N[i],ch->act[i]*100);
+    if(input_text&&input_text[0]){
+        int uids[512]; int ulen=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),uids,512);
+        ingest_ids(mw,uids,ulen,0.02f);
+        ch_feel_text(ch,input_text,pt);
+        ch->act[CH_FLOW]=clampf(ch->act[CH_FLOW]+0.1f,0,1);
+        ch_xfire(ch,8);
+    }
+
+    char chbuf[256];
+    ch_summary(ch,chbuf,sizeof(chbuf));
+    printf("\n  diss=%.3f debt=%.3f emrg=%.3f %s\n  chambers: %s",cd,ch->debt,ch_emergence(ch),has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]",chbuf);
     if(parl) {float av=0;for(int i=0;i<parl->n;i++) av+=parl->ex[i].vitality;av/=(parl->n>0?parl->n:1);
         printf("\n  parliament: %d experts, avg_vitality=%.2f",parl->n,av);}
+    if(itf&&itf->n_docs>0) printf("\n  interference: %d docs loaded",itf->n_docs);
     printf("\n\n");
 
     float *gdest=calloc(t->D,sizeof(float)); /* persistent destiny across chain */
@@ -730,35 +900,43 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
     int chain_ids[CHAIN_STEPS][256]; int chain_lens[CHAIN_STEPS];
     for(int si=0;si<CHAIN_STEPS;si++){
         int dir=si<nb?-1:(si==nb?0:1);
-        /* pick prompt: destiny-guided for forward steps, random for backward */
-        int start=-1;
-        if(dir>=0&&si>0){
-            /* destiny-guided: find sentence boundary whose tokens have high destiny dot */
-            float best_score=-1e30f;int best_pos=-1,tries2=0;
-            while(tries2<50){
-                int r=rand()%(clen>5?clen-5:1);
-                if(is_boundary(bpe,cids[r])&&r+3<clen&&starts_with_space(bpe,cids[r+1])){
-                    /* score: dot product of first prompt token embedding with destiny */
-                    float sc=0;int tok=cids[r+1];
-                    if(tok<t->V) for(int d=0;d<t->D;d++) sc+=t->tok[tok*t->D+d]*gdest[d];
-                    if(sc>best_score){best_score=sc;best_pos=r+1;}
+        int prompt[5]={0},plen=0,used_interf=0;
+        if(itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<0.3f){
+            int seed=interf_seed(itf,ch,bpe,pt);
+            if(seed>=0){prompt[0]=seed;plen=1;used_interf=1;}
+        }
+        if(plen==0&&input_text&&input_text[0]){
+            int inp_ids[128]; int inp_n=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),inp_ids,128);
+            if(inp_n>0){int st=rand()%(inp_n>2?inp_n-1:1); prompt[0]=inp_ids[st]; if(st+1<inp_n){prompt[1]=inp_ids[st+1];plen=2;}else plen=1;}
+        }
+        if(plen==0){
+            int start=-1;
+            if(dir>=0&&si>0){
+                float best_score=-1e30f;int best_pos=-1,tries2=0;
+                while(tries2<50){
+                    int r=rand()%(clen>5?clen-5:1);
+                    if(is_boundary(bpe,cids[r])&&r+3<clen&&starts_with_space(bpe,cids[r+1])){
+                        float sc=0;int tok=cids[r+1];
+                        if(tok<t->V) for(int d=0;d<t->D;d++) sc+=t->tok[tok*t->D+d]*gdest[d];
+                        if(sc>best_score){best_score=sc;best_pos=r+1;}
+                    }
+                    tries2++;
                 }
-                tries2++;
+                if(best_pos>=0) start=best_pos;
             }
-            if(best_pos>=0) start=best_pos;
-        }
-        if(start<0){/* random boundary for backward steps or fallback */
-            int tries=0;
-            while(start<0&&tries<200){
-                int r=rand()%(clen>5?clen-5:1);
-                if(is_boundary(bpe,cids[r])&&r+3<clen&&starts_with_space(bpe,cids[r+1])){start=r+1;break;}
-                tries++;
+            if(start<0){
+                int tries=0;
+                while(start<0&&tries<200){
+                    int r=rand()%(clen>5?clen-5:1);
+                    if(is_boundary(bpe,cids[r])&&r+3<clen&&starts_with_space(bpe,cids[r+1])){start=r+1;break;}
+                    tries++;
+                }
             }
+            if(start<0) start=rand()%(clen>5?clen-5:1);
+            plen=start+5<=clen?5:3;
+            prompt[0]=cids[start];prompt[1]=cids[start+1];prompt[2]=cids[start+2];
+            prompt[3]=plen>3?cids[start+3]:0;prompt[4]=plen>4?cids[start+4]:0;
         }
-        if(start<0) start=rand()%(clen>5?clen-5:1); /* final fallback */
-        int plen=start+5<=clen?5:3;
-        int prompt[5]={cids[start],cids[start+1],cids[start+2],
-                       plen>3?cids[start+3]:0,plen>4?cids[start+4]:0};
         /* Schumann resonance: 7.83Hz fundamental + harmonics modulate temperature */
         float t_sec=(float)si/(float)CHAIN_STEPS;
         float schumann=0.4f*sinf(2*M_PI*7.83f*t_sec)+0.2f*sinf(2*M_PI*14.3f*t_sec)
@@ -775,15 +953,36 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
             if(sc>best_sc){best_sc=sc;best_ol=ol;memcpy(best_out,out,ol*sizeof(int));}
             if(best_sc>1.0f&&best_ol>12) break; /* early exit if first candidate is strong */
         }
+        int wormhole=0;
+        if(si<CHAIN_STEPS-1){
+            float wh_prob=0.02f;
+            if(cd>0.3f) wh_prob+=((cd-0.3f)/0.7f)*0.15f;
+            wormhole=((float)rand()/RAND_MAX)<wh_prob;
+            if(wormhole&&itf&&itf->n_docs>0){
+                const InterferenceDoc *doc=&itf->docs[0];
+                for(int di=1;di<itf->n_docs;di++) if(itf->docs[di].n_heavy>doc->n_heavy) doc=&itf->docs[di];
+                if(doc->n_heavy>0){
+                    int wh_prompt[1]={doc->heavy[rand()%doc->n_heavy]};
+                    dir=dir!=0?-dir:1;
+                    best_ol=gen_sent(t,bpe,mw,wh_prompt,1,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch);
+                    best_sc=coherence_score(mw,best_out,best_ol,t->V);
+                }
+            }
+        }
         char mk=dir<0?'<':(dir==0?'*':'>');
-        printf("  [%2d] %c ",si+1,mk);
+        printf("  [%2d] %c%s ",si+1,mk,wormhole?"+":"");
         /* quality gate: skip if too short or low coherence */
         if(best_ol<5||(best_sc<0.01f&&best_ol<8)){
             printf("[...]\n");
         }else{
-            char buf[128];int printed=0;
-            for(int i=0;i<best_ol&&printed<200;i++){int len=bpe_decode_token(bpe,best_out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len;}}
+            char buf[128],textbuf[512]={0};int printed=0,pos=0;
+            for(int i=0;i<best_ol&&printed<200;i++){int len=bpe_decode_token(bpe,best_out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len; if(pos+len<(int)sizeof(textbuf)-1){memcpy(textbuf+pos,buf,len);pos+=len;textbuf[pos]=0;}}}
+            if(used_interf) printf("  {interf}");
+            if(wormhole) printf("  {wormhole}");
             printf("\n");
+            ch_feel_text(ch,textbuf,pt);
+            int text_ids[256]; int text_n=bpe_encode(bpe,(const uint8_t*)textbuf,(int)strlen(textbuf),text_ids,256);
+            ingest_ids(mw,text_ids,text_n,0.005f);
         }
         /* save for SPA */
         chain_lens[si]=best_ol; memcpy(chain_ids[si],best_out,best_ol*sizeof(int));
@@ -830,12 +1029,15 @@ int main(int argc, char **argv){
     printf("[2] Corpus...\n");
     FILE *cf=fopen(cpath,"rb"); if(!cf){fprintf(stderr,"ERROR: %s\n",cpath);return 1;}
     fseek(cf,0,SEEK_END);long csz=ftell(cf);fseek(cf,0,SEEK_SET);
-    uint8_t *craw=malloc(csz);fread(craw,1,csz,cf);fclose(cf);
+    uint8_t *craw=malloc(csz+1);fread(craw,1,csz,cf);fclose(cf); craw[csz]=0;
     int *cids=malloc(csz*sizeof(int));int clen=bpe_encode(&bpe,craw,(int)csz,cids,(int)csz);
-    free(craw); printf("  %ld bytes -> %d tokens\n",csz,clen);
+    printf("  %ld bytes -> %d tokens\n",csz,clen);
 
     printf("[3] MetaWeights...\n");
     MetaW *mw=calloc(1,sizeof(MetaW)); meta_build(mw,cids,clen,bpe.vocab_size);
+    PeriodicTable pt; periodic_init(&pt); periodic_build_from_text(&pt,(const char*)craw);
+    printf("  periodic table: %d elements\n",pt.n);
+    free(craw);
 
     TF t={0};
     if(has_weights){
@@ -857,13 +1059,15 @@ int main(int argc, char **argv){
         t.clen=0;t.logits=calloc(t.V,sizeof(float));
     }
 
+    Interference itf; interf_load(&itf,"docs",&bpe);
+    if(itf.n_docs>0) printf("[4.5] Interference...\n  %d docs loaded\n",itf.n_docs);
+
     /* try loading saved memory */
     {FILE *mf=fopen("q.memory","rb");
     if(mf){
         uint32_t magic;fread(&magic,4,1,mf);
         if(magic==0x514D454D){
             int nb,nt,nh;fread(&nb,4,1,mf);fread(&nt,4,1,mf);fread(&nh,4,1,mf);
-            /* overlay: merge saved with corpus-derived, keeping higher probs */
             for(int i=0;i<nb&&i<MAX_BIGRAM;i++){
                 int a,b;float p;fread(&a,4,1,mf);fread(&b,4,1,mf);fread(&p,4,1,mf);
                 int found=0;
@@ -871,10 +1075,17 @@ int main(int argc, char **argv){
                     if(p>mw->bigrams[j].prob) mw->bigrams[j].prob=p;found=1;break;}
                 if(!found&&mw->n_bi<MAX_BIGRAM){mw->bigrams[mw->n_bi].a=a;mw->bigrams[mw->n_bi].b=b;mw->bigrams[mw->n_bi].prob=p;mw->n_bi++;}
             }
-            /* skip trigrams and hebbian for now — just seek past them */
-            for(int i=0;i<nt;i++){int tmp[3];float f;fread(tmp,4,3,mf);fread(&f,4,1,mf);}
-            for(int i=0;i<nh;i++){int tmp[2];float f;fread(tmp,4,2,mf);fread(&f,4,1,mf);}
-            printf("  [memory loaded: %d bi from q.memory]\n",nb);
+            for(int i=0;i<nt&&i<MAX_TRIGRAM;i++){
+                int a,b,c; float p; fread(&a,4,1,mf);fread(&b,4,1,mf);fread(&c,4,1,mf);fread(&p,4,1,mf);
+                int found=0; for(int j=0;j<mw->n_tri;j++) if(mw->trigrams[j].a==a&&mw->trigrams[j].b==b&&mw->trigrams[j].c==c){ if(p>mw->trigrams[j].prob) mw->trigrams[j].prob=p; found=1; break; }
+                if(!found&&mw->n_tri<MAX_TRIGRAM){mw->trigrams[mw->n_tri].a=a;mw->trigrams[mw->n_tri].b=b;mw->trigrams[mw->n_tri].c=c;mw->trigrams[mw->n_tri].prob=p;mw->n_tri++;}
+            }
+            for(int i=0;i<nh&&i<MAX_HEBBIAN;i++){
+                int a,b; float p; fread(&a,4,1,mf);fread(&b,4,1,mf);fread(&p,4,1,mf);
+                int found=0; for(int j=0;j<mw->n_hebb;j++) if(mw->hebbs[j].a==a&&mw->hebbs[j].b==b){ if(p>mw->hebbs[j].str) mw->hebbs[j].str=p; found=1; break; }
+                if(!found&&mw->n_hebb<MAX_HEBBIAN){mw->hebbs[mw->n_hebb].a=a;mw->hebbs[mw->n_hebb].b=b;mw->hebbs[mw->n_hebb].str=p;mw->n_hebb++;}
+            }
+            printf("  [memory loaded: %d bi, %d tri, %d hebb from q.memory]\n",nb,nt,nh);
         }
         fclose(mf);
     }}
@@ -886,7 +1097,7 @@ int main(int argc, char **argv){
     printf("  %d experts, rank=%d, d_model=%d, alpha=%.2f\n",parl.n,DOE_RANK,t.D,parl.alpha);
 
     printf("\n========== 12 BIDIRECTIONAL STEPS ==========\n");
-    gen_chain(&t,&bpe,mw,&ch,cids,clen,has_weights,&parl);
+    gen_chain(&t,&bpe,mw,&ch,cids,clen,has_weights,&parl,&pt,&itf,NULL);
 
     printf("\ntype -> 12 sentences. 'quit' to exit.\n\n");
     char input[1024];
@@ -894,39 +1105,10 @@ int main(int argc, char **argv){
         printf("  q> ");if(!fgets(input,sizeof(input),stdin))break;
         input[strcspn(input,"\n")]=0;
         if(!input[0]||!strcmp(input,"quit")||!strcmp(input,"exit"))break;
-        /* inject user input into MetaWeights (word capture from dialogue) */
         {int uids[512];int ulen=bpe_encode(&bpe,(const uint8_t*)input,(int)strlen(input),uids,512);
-        if(ulen>1){
-            /* bigram capture */
-            for(int i=0;i<ulen-1;i++){
-                int a=uids[i],b=uids[i+1];int found=0;
-                for(int j=0;j<mw->n_bi;j++) if(mw->bigrams[j].a==a&&mw->bigrams[j].b==b){mw->bigrams[j].prob+=0.02f;found=1;break;}
-                if(!found&&mw->n_bi<MAX_BIGRAM){mw->bigrams[mw->n_bi].a=a;mw->bigrams[mw->n_bi].b=b;mw->bigrams[mw->n_bi].prob=0.05f;mw->n_bi++;}
-            }
-            /* trigram capture */
-            for(int i=0;i<ulen-2;i++){
-                int a=uids[i],b=uids[i+1],c=uids[i+2];int found=0;
-                for(int j=0;j<mw->n_tri;j++) if(mw->trigrams[j].a==a&&mw->trigrams[j].b==b&&mw->trigrams[j].c==c){mw->trigrams[j].prob+=0.02f;found=1;break;}
-                if(!found&&mw->n_tri<MAX_TRIGRAM){mw->trigrams[mw->n_tri].a=a;mw->trigrams[mw->n_tri].b=b;mw->trigrams[mw->n_tri].c=c;mw->trigrams[mw->n_tri].prob=0.05f;mw->n_tri++;}
-            }
-            /* Hebbian capture */
-            for(int i=0;i<ulen;i++){for(int j=(i-6>0?i-6:0);j<ulen&&j<=i+6;j++){
-                if(i==j)continue;
-                int ha=uids[i]<uids[j]?uids[i]:uids[j],hb=uids[i]<uids[j]?uids[j]:uids[i];
-                float decay=1.0f/(1.0f+abs(i-j));int found=0;
-                for(int k=0;k<mw->n_hebb;k++) if(mw->hebbs[k].a==ha&&mw->hebbs[k].b==hb){mw->hebbs[k].str+=decay*0.01f;found=1;break;}
-                if(!found&&mw->n_hebb<MAX_HEBBIAN){mw->hebbs[mw->n_hebb].a=ha;mw->hebbs[mw->n_hebb].b=hb;mw->hebbs[mw->n_hebb].str=decay*0.02f;mw->n_hebb++;}
-            }}
-            printf("  [ingested %d tokens: +bi +tri +hebb]\n",ulen);
-        }}
-        /* modulate chambers based on input sentiment */
-        if(strstr(input,"love")||strstr(input,"beauty")||strstr(input,"kind")) ch.act[CH_LOVE]+=0.15f;
-        if(strstr(input,"fear")||strstr(input,"dark")||strstr(input,"death")) ch.act[CH_FEAR]+=0.15f;
-        if(strstr(input,"rage")||strstr(input,"anger")||strstr(input,"fire")) ch.act[CH_RAGE]+=0.15f;
-        if(strstr(input,"void")||strstr(input,"nothing")||strstr(input,"silence")) ch.act[CH_VOID]+=0.15f;
-        if(strstr(input,"flow")||strstr(input,"water")||strstr(input,"music")) ch.act[CH_FLOW]+=0.15f;
-        ch.act[CH_FLOW]+=0.1f;ch_xfire(&ch,8);
-        gen_chain(&t,&bpe,mw,&ch,cids,clen,has_weights,&parl);
+        ingest_ids(mw,uids,ulen,0.02f);
+        if(ulen>1) printf("  [ingested %d tokens: +bi +tri +hebb]\n",ulen);}
+        gen_chain(&t,&bpe,mw,&ch,cids,clen,has_weights,&parl,&pt,&itf,input);
     }
     /* save evolved MetaWeights — Q remembers between sessions */
     {FILE *mf=fopen("q.memory","wb");

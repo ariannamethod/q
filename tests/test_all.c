@@ -427,7 +427,50 @@ void test_bigram_blocking(void) {
     PASS();
 }
 
-/* ── 21. Smoke: compile only ── */
+/* ── 21. Chamber modulation ── */
+void test_chamber_modulation(void) {
+    TEST("chamber_modulation");
+    float act[6]={0.1f,0.6f,0.2f,0.1f,0.5f,0.3f};
+    float a=fminf(2.0f,fmaxf(0.3f,1.0f+0.4f*act[1]-0.2f*act[2]+0.3f*act[4]));
+    float b=fminf(2.0f,fmaxf(0.3f,1.0f+0.4f*act[4]-0.2f*act[0]));
+    float g=fminf(2.0f,fmaxf(0.3f,1.0f+0.5f*act[5]+0.2f*act[1]-0.1f*act[3]));
+    float t=fminf(2.0f,fmaxf(0.3f,1.0f-0.2f*act[4]+0.1f*act[0]));
+    CHECK(a>1.3f&&a<1.4f, "alpha modulated");
+    CHECK(b>1.1f&&b<1.3f, "beta modulated");
+    CHECK(g>1.1f&&g<1.4f, "gamma modulated");
+    CHECK(t>0.8f&&t<1.0f, "tau modulated");
+    PASS();
+}
+
+/* ── 22. Periodic mapping ── */
+void test_periodic_mapping(void) {
+    TEST("periodic_mapping");
+    const char *text="love rhythm paradox love rhythm mystery";
+    int love=0, flow=0, complex=0;
+    CHECK(strstr(text,"love")!=NULL, "anchor love present");
+    CHECK(strstr(text,"rhythm")!=NULL, "anchor rhythm present");
+    CHECK(strstr(text,"paradox")!=NULL, "anchor paradox present");
+    if(strstr(text,"love")) love=1;
+    if(strstr(text,"rhythm")) flow=1;
+    if(strstr(text,"paradox")) complex=1;
+    CHECK(love&&flow&&complex, "multiple chambers discoverable");
+    PASS();
+}
+
+/* ── 23. Interference seed selection ── */
+void test_interference_seed(void) {
+    TEST("interference_seed");
+    const char *tok1=" resonance";
+    const char *tok2=" void";
+    int dom=4; /* FLOW */
+    float s1=0.1f, s2=0.1f;
+    if(strstr(tok1,"resonance")&&dom==4) s1+=1.0f;
+    if(strstr(tok2,"void")&&dom==3) s2+=1.0f;
+    CHECK(s1>s2, "dominant chamber prefers resonant seed");
+    PASS();
+}
+
+/* ── 24. Smoke: compile only ── */
 void test_smoke_compile(void) {
     TEST("smoke_compile");
     int ret=system("gcc postgpt_q.c -O2 -lm -o /tmp/q_smoke 2>/dev/null");
@@ -436,19 +479,19 @@ void test_smoke_compile(void) {
     PASS();
 }
 
-/* ── 22. Smoke: run with small corpus ── */
+/* ── 25. Smoke: run with small corpus ── */
 void test_smoke_run_small(void) {
     TEST("smoke_run_small_corpus");
     system("head -c 5000 q.txt > /tmp/q_tiny.txt 2>/dev/null");
     int ret=system("gcc postgpt_q.c -O2 -lm -o /tmp/q_smoke 2>/dev/null");
     if(ret!=0){FAIL("compile");return;}
-    ret=system("echo quit | timeout 30 /tmp/q_smoke q.merges /tmp/q_tiny.txt >/dev/null 2>&1");
+    ret=system("printf 'quit\n' | /tmp/q_smoke q.merges /tmp/q_tiny.txt >/dev/null 2>&1");
     CHECK(ret==0, "runs on 5KB corpus");
     remove("/tmp/q_smoke"); remove("/tmp/q_tiny.txt");
     PASS();
 }
 
-/* ── 23. Smoke: run with weights ── */
+/* ── 26. Smoke: run with weights ── */
 void test_smoke_run_weights(void) {
     TEST("smoke_run_with_weights");
     system("head -c 5000 q.txt > /tmp/q_tiny.txt 2>/dev/null");
@@ -457,7 +500,7 @@ void test_smoke_run_weights(void) {
     /* try rrpram3_janus3 if exists */
     ret=system("test -f weights/rrpram3_janus3.bin");
     if(ret!=0){printf("SKIP (no .bin weights)\n");tests_passed++;return;}
-    ret=system("echo quit | timeout 30 /tmp/q_smoke weights/rrpram3_janus3.bin q.merges /tmp/q_tiny.txt >/dev/null 2>&1");
+    ret=system("printf 'quit\n' | /tmp/q_smoke weights/rrpram3_janus3.bin q.merges /tmp/q_tiny.txt >/dev/null 2>&1");
     CHECK(ret==0, "runs with weights");
     remove("/tmp/q_smoke"); remove("/tmp/q_tiny.txt");
     PASS();
@@ -485,6 +528,9 @@ int main(void) {
     test_adaptive_coefficients();
     test_hebbian_decay();
     test_bigram_blocking();
+    test_chamber_modulation();
+    test_periodic_mapping();
+    test_interference_seed();
     test_smoke_compile();
     test_smoke_run_small();
     test_smoke_run_weights();

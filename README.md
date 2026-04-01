@@ -16,14 +16,13 @@ Q is not a chatbot. Q is an organism that reasons through resonance.
 
 ## Versions
 
-PostGPT-Q exists in **four incarnations**, because apparently writing it once wasn't enough suffering:
+PostGPT-Q exists in **three unified incarnations**:
 
-| File | Language | Lines | Role | Status |
-|------|----------|-------|------|--------|
-| `postgpt_q.c` | C | 944 | **Canonical inference engine** | 🟢 THE LAW |
-| `postgpt_q.py` | Python | ~1450 | **Faithful Python port of C** | 🟢 Same soul, slower legs |
-| `q.html` | JS/HTML | ~1065 | **Browser inference** — drag, drop, resonate | 🟢 Works in Chrome, probably |
-| `qresearch.py` | Python | ~2105 | **Research/training version** — Val autograd, wormholes, interference, RoPE, the whole circus | 🟡 Experimental |
+| File | Language | Role | Status |
+|------|----------|------|--------|
+| `postgpt_q.c` | C | Canonical inference engine | Unified |
+| `postgpt_q.py` | Python | Faithful Python port of the same engine | Unified |
+| `q.html` | JS/HTML | Browser inference port of the same engine | Unified |
 
 ### Which version is canonical?
 
@@ -31,18 +30,22 @@ PostGPT-Q exists in **four incarnations**, because apparently writing it once wa
 
 **`q.html`** is the canonical *browser* implementation — same architecture, runs anywhere with a browser and a dream.
 
-**`postgpt_q.py`** is a faithful 1:1 Python translation of the C version. Same constants, same coefficients, same pipeline. If the C says `0.035`, the Python says `0.035`. If the C says "best-of-3", the Python generates 3 candidates and picks the best. No creative liberties. No "improvements". Pure translation. Like Google Translate but it actually works.
+**`postgpt_q.py`** and **`q.html`** now implement the same inference contract as the C engine, including the features that previously only existed in the research branch.
 
-**`qresearch.py`** is the research branch — it has everything the C version has plus: Val autograd (training!), RoPE positional embeddings, interference system (multi-document injection), periodic table of emotions, wormhole jumps (spacetime skips!), chamber prototypes with embedding-based emotional resonance, dynamic Dario coefficient modulation. It's the version where I said "what if I add one more thing" approximately 47 times.
+`qresearch.py` has been merged and removed. There is no longer a research-only inference path.
 
-### C vs Python: what's different in `qresearch.py`?
+### Unified inference contract
 
-| Feature | C / Python (canonical) | `qresearch.py` (research) |
-|---------|----------------------|---------------------------|
-| Dario coefficients | Static: `heb=0.4, bg=5.0` (with weights) | Dynamically modulated by chambers |
-| Attention | Content + RRPRAM + Janus (no RoPE) | Same + RoPE positional embeddings |
-| DOE alpha | `0.05` | `0.1` (2× stronger injection) |
-| Best-of-3 | ✅ coherence-scored | ❌ takes first candidate |
+- dynamically modulated chambers
+- interference / multi-document seed injection from `docs/`
+- coherence scoring and best-of-3 candidate selection
+- greedy-to-nucleus transition
+- bigram blocking
+- age-based repetition penalty
+- Schumann resonance temperature modulation
+- wormhole-style direction flips under calendar dissonance
+- online word capture and persistent memory (`q.memory` in CLI, `localStorage` in browser)
+- periodic / emotion mapping that feeds chamber activation during inference
 | Greedy→nucleus | ✅ greedy first 4, then nucleus | ❌ always nucleus |
 | Bigram blocking | ✅ | ❌ |
 | Age-based rep penalty | ✅ `0.3 + 0.035 * age` | ❌ uniform `0.5` |
@@ -235,13 +238,6 @@ python3 postgpt_q.py q.merges q.txt
 
 ```
 Open q.html in browser. Click DEMO. That's it. Go get coffee.
-```
-
-### Research (qresearch.py)
-
-```bash
-# training + inference, Val autograd, the whole research kitchen
-python3 qresearch.py
 ```
 
 Requires: `q.merges` (BPE merge table, binary) and `q.txt` (corpus).
