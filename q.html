@@ -385,12 +385,22 @@ class MetaWeights {
   queryProphecy(ctxArr,V){
     const out=new Float32Array(V);
     const appeared=new Set(ctxArr);
-    const start=Math.max(0,ctxArr.length-4);
-    for(let ci=start;ci<ctxArr.length;ci++){
+    const cl=ctxArr.length;
+    const start=Math.max(0,cl-12); // extended window: 12 tokens back
+    for(let ci=start;ci<cl;ci++){
       const c=ctxArr[ci];
+      const decay=1.0/(1.0+(cl-1-ci)); // recent tokens contribute more
       for(const[k,p]of this.bi){
         const a=k>>>16,b=k&0xffff;
-        if(a===c&&b<V&&!appeared.has(b))out[b]+=p;
+        if(a===c&&b<V&&!appeared.has(b))out[b]+=p*decay;
+      }
+    }
+    // trigram prophecy: predict from last 2 tokens as pair context
+    if(cl>=2){
+      const p0=ctxArr[cl-2],p1=ctxArr[cl-1];
+      for(const[k,p]of this.tri){
+        const a=(k/65536/65536)|0,b=((k/65536)|0)%65536,c2=k%65536;
+        if(a===p0&&b===p1&&c2<V&&!appeared.has(c2))out[c2]+=p*1.5; // trigrams more specific
       }
     }
     let mx=0;for(let i=0;i<V;i++)if(out[i]>mx)mx=out[i];
@@ -758,11 +768,16 @@ function ingestIds(ids,amount=0.02){
 
 function saveBrowserMemory(){
   if(!mw)return;
-  localStorage.setItem('q.memory',JSON.stringify({
+  const data={
     bi:[...mw.bi.entries()],
     tri:[...mw.tri.entries()],
     hebb:[...mw.hebb.entries()]
-  }));
+  };
+  // save periodic table
+  if(periodic&&periodic.elements){
+    data.periodic=Object.entries(periodic.elements).map(([w,e])=>({w,ch:e.ch,mass:e.mass}));
+  }
+  localStorage.setItem('q.memory',JSON.stringify(data));
 }
 
 function loadBrowserMemory(){
@@ -775,6 +790,14 @@ function loadBrowserMemory(){
     for(const [k,v] of mem.tri||[])mw.tri.set(k,Math.max(mw.tri.get(k)||0,Number(v)));
     for(const [k,v] of mem.hebb||[])mw.hebb.set(Number(k),Math.max(mw.hebb.get(Number(k))||0,Number(v)));
     mw.bigramCount=mw.bi.size;
+    // load periodic table
+    if(mem.periodic&&periodic){
+      for(const e of mem.periodic){
+        if(e.w&&typeof e.ch==='number'&&e.ch<6){
+          periodic.elements[e.w]={ch:e.ch,mass:e.mass||0.5};
+        }
+      }
+    }
     return true;
   }catch(_err){return false;}
 }
@@ -805,6 +828,9 @@ function coherenceScore(ids){
   if(ids.length<2)return-1;
   let biSum=0;
   for(let i=0;i<ids.length-1;i++)biSum+=mw.queryBi(ids[i],ids[i+1]);
+  // trigram continuity: stronger signal than bigrams for coherence
+  let triSum=0;
+  for(let i=0;i<ids.length-2;i++)triSum+=mw.queryTri(ids[i],ids[i+1],ids[i+2]);
   const lenBonus=ids.length>15?1.5:ids.length>10?0.8:ids.length>6?0.2:-0.5;
   // Hebbian density component (matches C)
   let hbSum=0;
@@ -812,7 +838,8 @@ function coherenceScore(ids){
     const a=Math.min(ids[i],ids[i+1]),b=Math.max(ids[i],ids[i+1]);
     const v=mw.hebb.get(a*65536+b)||0;hbSum+=v;
   }
-  return biSum/(ids.length-1)+0.3*hbSum/(ids.length-1)+lenBonus;
+  const triNorm=ids.length>2?triSum/(ids.length-2):0;
+  return biSum/(ids.length-1)+0.5*hbSum/(ids.length-1)+0.8*triNorm+lenBonus;
 }
 
 // zero token embedding table for MetaWeights-only mode (matches C zero-weight fallback)
@@ -870,7 +897,9 @@ function genSentence(prompt,temp,gdest){
     const last=ctx[ctx.length-1];
 
     // destiny (uses tokEmb which is zero in MetaWeights-only mode, matching C)
-    if(last<V)for(let d=0;d<D;d++)destiny[d]=0.9*destiny[d]+0.1*tokEmb[last*D+d];
+    // adaptive destiny momentum: faster update early, stable later
+    const dMom=step<20?0.85:0.92,dLr=1.0-dMom;
+    if(last<V)for(let d=0;d<D;d++)destiny[d]=dMom*destiny[d]+dLr*tokEmb[last*D+d];
 
     let dn=0;for(let d=0;d<D;d++)dn+=destiny[d]*destiny[d];dn=Math.sqrt(dn+1e-10);
 
@@ -885,7 +914,7 @@ function genSentence(prompt,temp,gdest){
     // detect transformer activity
     let tmag=0;for(let i=0;i<V;i++)tmag+=Math.abs(raw[i]);tmag/=V;
     const hasTf=tmag>0.1;
-    const cHeb=(hasTf?0.4:0.8)*mod.a,cPro=(hasTf?0.2:0.5)*mod.b,cDs=(hasTf?0.3:0.1)*mod.g,cBg=hasTf?5:15,cTg=hasTf?3:10;
+    const cHeb=(hasTf?0.6:1.0)*mod.a,cPro=(hasTf?0.4:0.7)*mod.b,cDs=(hasTf?0.3:0.15)*mod.g,cBg=hasTf?5:15,cTg=hasTf?3:10;
 
     for(let i=0;i<V;i++){
       const bg=mw.queryBi(ctx[ctx.length-1],i);
@@ -1116,21 +1145,32 @@ function generateChain(inputText){
     chambers.debt=0.9*chambers.debt+0.05;
   }
 
-  // SPA: cross-attend sentences, find weak ones, reseed (matches C)
-  const spaEmbs=chainIds.map(ids=>spa.embedSentence(ids));
-  const spaScores=spa.crossAttend(spaEmbs);
-  let minSc=spaScores[0],weakIdx=0;
-  for(let i=1;i<CHAIN;i++)if(spaScores[i]<minSc){minSc=spaScores[i];weakIdx=i;}
-  let avgSc=0;for(let i=0;i<CHAIN;i++)avgSc+=spaScores[i];avgSc/=CHAIN;
-  if(minSc<avgSc*0.5){
-    log(`[SPA] reseeding step ${weakIdx+1} (score=${minSc.toFixed(2)}, avg=${avgSc.toFixed(2)})`);
-    const r=Math.floor(Math.random()*Math.max(1,corpusIds.length-5));
-    const rPrompt=corpusIds.slice(r,Math.min(r+5,corpusIds.length));
-    const rTemp=tf&&tf.loaded?0.55:0.7;
-    const rOut=genSentence(rPrompt,rTemp,gdest);
-    const rText=bpe.decode(rOut);
-    const dir=weakIdx<nb?-1:weakIdx===nb?0:1;
-    addStep(weakIdx+1,dir,rText+' [reseeded]');
+  // SPA: iterative cross-attention — reseed weak sentences, verify improvement
+  for(let spaPass=0;spaPass<2;spaPass++){
+    const spaEmbs=chainIds.map(ids=>spa.embedSentence(ids));
+    const spaScores=spa.crossAttend(spaEmbs);
+    let minSc=spaScores[0],weakIdx=0;
+    for(let i=1;i<CHAIN;i++)if(spaScores[i]<minSc){minSc=spaScores[i];weakIdx=i;}
+    let avgSc=0;for(let i=0;i<CHAIN;i++)avgSc+=spaScores[i];avgSc/=CHAIN;
+    if(minSc<avgSc*0.6){ // slightly more aggressive threshold
+      log(`[SPA-${spaPass+1}] reseeding step ${weakIdx+1} (score=${minSc.toFixed(2)}, avg=${avgSc.toFixed(2)})`);
+      // use neighbor sentences as context for better continuity
+      const seedSrc=weakIdx>0?weakIdx-1:(weakIdx<CHAIN-1?weakIdx+1:0);
+      const nprom=Math.min(3,chainIds[seedSrc].length);
+      const rPrompt=chainIds[seedSrc].slice(chainIds[seedSrc].length-nprom);
+      const rTemp=tf&&tf.loaded?0.55:0.7;
+      const rOut=genSentence(rPrompt,rTemp,gdest);
+      const newSc=coherenceScore(rOut);
+      const oldSc=coherenceScore(chainIds[weakIdx]);
+      if(newSc>oldSc*0.7||rOut.length>chainIds[weakIdx].length){ // accept if reasonable
+        chainIds[weakIdx]=rOut;chainLens[weakIdx]=rOut.length;
+        const rText=bpe.decode(rOut);
+        const dir=weakIdx<nb?-1:weakIdx===nb?0:1;
+        addStep(weakIdx+1,dir,rText+' {reseeded}');
+        chambers.feel(rText,periodic);
+        ingestIds(rOut,0.003);
+      }
+    }else break; // no weak sentences, stop iterating
   }
 
   mw.decay();
