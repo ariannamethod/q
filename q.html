@@ -197,7 +197,7 @@ body {
 // Matches postgpt_q.c exactly.
 // ═══════════════════════════════════════════════════════════════
 
-const CHAIN=12, TOP_K=15, MAX_EXPERTS=16, DOE_RANK=4, DOE_ALPHA=0.05;
+const CHAIN=12, TOP_K=15, MAX_EXPERTS=16, DOE_RANK=4, DOE_ALPHA=0.05, MAX_VOCAB=1280;
 const QPTQ_MAGIC=0x51505451;
 const CH_NAMES=['FEAR','LOVE','RAGE','VOID','FLOW','CMPLX'];
 const CH_DECAY=[0.90,0.93,0.85,0.97,0.88,0.94];
@@ -806,7 +806,7 @@ class SPACtx {
   constructor(V){
     this.alpha=0.85;
     this.wEmbed=[];
-    for(let i=0;i<V&&i<1280;i++){
+    for(let i=0;i<V&&i<MAX_VOCAB;i++){
       const row=new Float32Array(SPA_DIM);
       for(let d=0;d<SPA_DIM;d++)row[d]=0.02*(Math.random()-0.5);
       this.wEmbed.push(row);
@@ -910,6 +910,9 @@ function generateChain(inputText){
   const spa=new SPACtx(V);
   const chainIds=[],chainLens=[];
 
+  // helper: check if position is a valid sentence boundary for prompt extraction
+  function isSentStart(r){return r+5<=corpusIds.length&&bpe.isBoundary(corpusIds[r])&&bpe.startsWithSpace(corpusIds[r+1]);}
+
   for(let si=0;si<CHAIN;si++){
     const dir=si<nb?-1:si===nb?0:1;
 
@@ -919,7 +922,7 @@ function generateChain(inputText){
       let bestScore=-1e30,bestPos=-1,tries2=0;
       while(tries2<50){
         const r=Math.floor(Math.random()*(corpusIds.length>5?corpusIds.length-5:1));
-        if(bpe.isBoundary(corpusIds[r])&&r+3<corpusIds.length&&bpe.startsWithSpace(corpusIds[r+1])){
+        if(isSentStart(r)){
           let sc=0;const tok=corpusIds[r+1];
           if(tok<V)for(let d=0;d<D;d++)sc+=tokEmb[tok*D+d]*gdest[d];
           if(sc>bestScore){bestScore=sc;bestPos=r+1;}
@@ -933,12 +936,12 @@ function generateChain(inputText){
       let tries=0;
       while(start<0&&tries<200){
         const r=Math.floor(Math.random()*(corpusIds.length>5?corpusIds.length-5:1));
-        if(bpe.isBoundary(corpusIds[r])&&r+3<corpusIds.length&&bpe.startsWithSpace(corpusIds[r+1])){start=r+1;break;}
+        if(isSentStart(r)){start=r+1;break;}
         tries++;
       }
     }
-    if(start<0)start=Math.floor(Math.random()*(corpusIds.length-5));
-    const plen=start+5<=corpusIds.length?5:3;
+    if(start<0)start=Math.floor(Math.random()*Math.max(1,corpusIds.length-5));
+    const plen=Math.min(5,corpusIds.length-start);
     const prompt=corpusIds.slice(start,start+plen);
 
     // Schumann
@@ -977,8 +980,8 @@ function generateChain(inputText){
   let avgSc=0;for(let i=0;i<CHAIN;i++)avgSc+=spaScores[i];avgSc/=CHAIN;
   if(minSc<avgSc*0.5){
     log(`[SPA] reseeding step ${weakIdx+1} (score=${minSc.toFixed(2)}, avg=${avgSc.toFixed(2)})`);
-    const r=Math.floor(Math.random()*(corpusIds.length>5?corpusIds.length-5:1));
-    const rPrompt=corpusIds.slice(r,r+5);
+    const r=Math.floor(Math.random()*Math.max(1,corpusIds.length-5));
+    const rPrompt=corpusIds.slice(r,Math.min(r+5,corpusIds.length));
     const rTemp=tf&&tf.loaded?0.55:0.7;
     const rOut=genSentence(rPrompt,rTemp,gdest);
     const rText=bpe.decode(rOut);
