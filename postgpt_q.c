@@ -200,17 +200,28 @@ static void meta_hebb(const MetaW *mw, const int *ctx, int cl, float *out, int V
     float mx=0; for(int i=0;i<V;i++) if(out[i]>mx) mx=out[i];
     if(mx>0) for(int i=0;i<V;i++) out[i]/=mx;
 }
-/* prophecy: predict next token from recent bigram context (top-16) */
+/* prophecy: predict next token from recent bigram context — extended window with decay */
 static void meta_prophecy(const MetaW *mw, const int *ctx, int cl, float *out, int V){
     memset(out,0,V*sizeof(float));
     int appeared[256]={0}; int na=cl<256?cl:256;
     for(int i=cl-na;i<cl;i++) if(ctx[i]<256) appeared[ctx[i]]=1;
-    int start=cl>4?cl-4:0;
+    int start=cl>12?cl-12:0; /* extended window: 12 tokens back instead of 4 */
     for(int ci=start;ci<cl;ci++){
         int c=ctx[ci];
+        float decay=1.0f/(1.0f+(float)(cl-1-ci)); /* recent tokens contribute more */
         for(int k=0;k<mw->n_bi;k++){
             if(mw->bigrams[k].a==c&&mw->bigrams[k].b<V&&!appeared[mw->bigrams[k].b%256]){
-                out[mw->bigrams[k].b]+=mw->bigrams[k].prob;
+                out[mw->bigrams[k].b]+=mw->bigrams[k].prob*decay;
+            }
+        }
+    }
+    /* trigram prophecy: predict from last 2 tokens as pair context */
+    if(cl>=2){
+        int p0=ctx[cl-2],p1=ctx[cl-1];
+        for(int k=0;k<mw->n_tri;k++){
+            if(mw->trigrams[k].a==p0&&mw->trigrams[k].b==p1&&mw->trigrams[k].c<V
+               &&!appeared[mw->trigrams[k].c%256]){
+                out[mw->trigrams[k].c]+=mw->trigrams[k].prob*1.5f; /* trigrams are more specific */
             }
         }
     }
@@ -642,12 +653,20 @@ static void tf_forward(TF *t, int tok, int pos){
 
 /* ── coherence score ── */
 static float coherence_score(const MetaW *mw, const int *ids, int n, int V){
-    /* score a token sequence by average bigram probability + Hebbian density */
+    /* score a token sequence by bigram + trigram + Hebbian density */
     if(n<2) return 0;
-    float bi_sum=0,hb_sum=0;
+    float bi_sum=0,tri_sum=0,hb_sum=0;
     for(int i=0;i<n-1;i++){
         for(int j=0;j<mw->n_bi;j++){
             if(mw->bigrams[j].a==ids[i]&&mw->bigrams[j].b==ids[i+1]){bi_sum+=mw->bigrams[j].prob;break;}
+        }
+    }
+    /* trigram continuity: stronger signal than bigrams for coherence */
+    for(int i=0;i<n-2;i++){
+        for(int j=0;j<mw->n_tri;j++){
+            if(mw->trigrams[j].a==ids[i]&&mw->trigrams[j].b==ids[i+1]&&mw->trigrams[j].c==ids[i+2]){
+                tri_sum+=mw->trigrams[j].prob;break;
+            }
         }
     }
     /* Hebbian: average association strength between adjacent pairs */
@@ -659,7 +678,8 @@ static float coherence_score(const MetaW *mw, const int *ids, int n, int V){
     }
     /* progressive length bonus: strongly prefer 15+ tokens */
     float len_bonus=(n>15)?1.5f:(n>10)?0.8f:(n>6)?0.2f:-0.5f;
-    return bi_sum/(n-1)+0.3f*hb_sum/(n-1)+len_bonus;
+    float tri_norm=n>2?tri_sum/(n-2):0;
+    return bi_sum/(n-1)+0.5f*hb_sum/(n-1)+0.8f*tri_norm+len_bonus;
 }
 
 /* ── boundary check ── */
@@ -731,7 +751,9 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         }
         memcpy(prev_logits,raw,V*sizeof(float));
         int last=ctx[cl-1];
-        if(last<V) for(int d=0;d<D;d++) destiny[d]=0.9f*destiny[d]+0.1f*t->tok[last*D+d];
+        /* adaptive destiny momentum: faster update early, stable later */
+        {float d_mom=step<20?0.85f:0.92f, d_lr=1.0f-d_mom;
+        if(last<V) for(int d=0;d<D;d++) destiny[d]=d_mom*destiny[d]+d_lr*t->tok[last*D+d];}
         float dn=0;for(int d=0;d<D;d++) dn+=destiny[d]*destiny[d];dn=sqrtf(dn+1e-10f);
         float *heb=calloc(V,sizeof(float));
         float *pro=calloc(V,sizeof(float));
@@ -744,8 +766,8 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         float tmag=0;for(int v=0;v<V;v++) tmag+=fabsf(raw[v]);tmag/=(V>0?V:1);
         int has_tf=tmag>0.1f;
         /* Dario field: B + α·H + β·P + γ·D + T — stronger without weights */
-        float c_heb=(has_tf?0.4f:0.8f)*am, c_pro=(has_tf?0.2f:0.5f)*bm;
-        float c_ds=(has_tf?0.3f:0.1f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
+        float c_heb=(has_tf?0.6f:1.0f)*am, c_pro=(has_tf?0.4f:0.7f)*bm;
+        float c_ds=(has_tf?0.3f:0.15f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
         for(int i=0;i<V;i++){
             float bg=meta_bi(mw,ctx[cl-1],i);
             float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
@@ -988,24 +1010,37 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         chain_lens[si]=best_ol; memcpy(chain_ids[si],best_out,best_ol*sizeof(int));
         ch_xfire(ch,3); ch->debt=0.9f*ch->debt+0.05f;
     }
-    /* SPA: cross-attend sentences, find weak ones, reseed */
+    /* SPA: iterative cross-attention — reseed weak sentences, verify improvement */
     float spa_embs[CHAIN_STEPS][SPA_DIM]; float spa_scores[CHAIN_STEPS];
-    for(int i=0;i<CHAIN_STEPS;i++) spa_embed_sentence(&spa,chain_ids[i],chain_lens[i],spa_embs[i]);
-    spa_cross_attend(&spa,spa_embs,CHAIN_STEPS,spa_scores);
-    /* find weakest sentence */
-    float min_sc=spa_scores[0];int weak_idx=0;
-    for(int i=1;i<CHAIN_STEPS;i++) if(spa_scores[i]<min_sc){min_sc=spa_scores[i];weak_idx=i;}
-    float avg_sc=0;for(int i=0;i<CHAIN_STEPS;i++) avg_sc+=spa_scores[i];avg_sc/=CHAIN_STEPS;
-    if(min_sc<avg_sc*0.5f){
-        /* reseed the weakest sentence */
-        printf("  [SPA] reseeding step %d (score=%.2f, avg=%.2f)\n",weak_idx+1,min_sc,avg_sc);
-        int r=rand()%(clen>5?clen-5:1);
-        int prompt[5]={cids[r],cids[r+1],cids[r+2],cids[r+3],cids[r+4]};
-        int out[256],ol=gen_sent(t,bpe,mw,prompt,5,has_weights?0.55f:0.7f,out,256,parl,gdest,ch);
-        printf("  [%2d] + ",weak_idx+1);
-        char buf[128];int printed=0;
-        for(int i=0;i<ol&&printed<200;i++){int len=bpe_decode_token(bpe,out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len;}}
-        printf("\n");
+    for(int spa_pass=0;spa_pass<2;spa_pass++){
+        for(int i=0;i<CHAIN_STEPS;i++) spa_embed_sentence(&spa,chain_ids[i],chain_lens[i],spa_embs[i]);
+        spa_cross_attend(&spa,spa_embs,CHAIN_STEPS,spa_scores);
+        /* find weakest sentence */
+        float min_sc=spa_scores[0];int weak_idx=0;
+        for(int i=1;i<CHAIN_STEPS;i++) if(spa_scores[i]<min_sc){min_sc=spa_scores[i];weak_idx=i;}
+        float avg_sc=0;for(int i=0;i<CHAIN_STEPS;i++) avg_sc+=spa_scores[i];avg_sc/=CHAIN_STEPS;
+        if(min_sc<avg_sc*0.6f){ /* slightly more aggressive threshold */
+            printf("  [SPA-%d] reseeding step %d (score=%.2f, avg=%.2f)\n",spa_pass+1,weak_idx+1,min_sc,avg_sc);
+            /* use neighbor sentences as context for better continuity */
+            int seed_src=weak_idx>0?weak_idx-1:(weak_idx<CHAIN_STEPS-1?weak_idx+1:0);
+            int nprom=chain_lens[seed_src]>3?3:chain_lens[seed_src];
+            int prompt[5]; for(int i=0;i<nprom;i++) prompt[i]=chain_ids[seed_src][chain_lens[seed_src]-nprom+i];
+            int out[256],ol=gen_sent(t,bpe,mw,prompt,nprom,has_weights?0.55f:0.7f,out,256,parl,gdest,ch);
+            float new_sc=coherence_score(mw,out,ol,t->V);
+            float old_sc=coherence_score(mw,chain_ids[weak_idx],chain_lens[weak_idx],t->V);
+            if(new_sc>old_sc*0.7f||ol>chain_lens[weak_idx]){ /* accept if reasonable */
+                chain_lens[weak_idx]=ol; memcpy(chain_ids[weak_idx],out,ol*sizeof(int));
+                printf("  [%2d] + ",weak_idx+1);
+                char buf[128];int printed=0;
+                for(int i=0;i<ol&&printed<200;i++){int len=bpe_decode_token(bpe,out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len;}}
+                printf("  {reseeded}\n");
+                /* feed reseeded text back into metaweights */
+                char textbuf[512]={0}; int pos=0;
+                for(int i=0;i<ol;i++){char b[128];int len=bpe_decode_token(bpe,out[i],b,sizeof(b));if(len>0&&pos+len<511){memcpy(textbuf+pos,b,len);pos+=len;}}
+                textbuf[pos]=0; ch_feel_text(ch,textbuf,pt);
+                ingest_ids(mw,out,ol,0.003f);
+            }
+        }else break; /* no weak sentences, stop iterating */
     }
     /* Hebbian decay: old memories fade after each chain */
     for(int i=0;i<mw->n_hebb;i++) mw->hebbs[i].str*=0.998f;
@@ -1086,6 +1121,19 @@ int main(int argc, char **argv){
                 if(!found&&mw->n_hebb<MAX_HEBBIAN){mw->hebbs[mw->n_hebb].a=a;mw->hebbs[mw->n_hebb].b=b;mw->hebbs[mw->n_hebb].str=p;mw->n_hebb++;}
             }
             printf("  [memory loaded: %d bi, %d tri, %d hebb from q.memory]\n",nb,nt,nh);
+            /* load periodic table elements */
+            uint32_t npe=0; if(fread(&npe,4,1,mf)==1&&npe>0&&npe<=MAX_PERIODIC){
+                for(uint32_t i=0;i<npe;i++){
+                    uint8_t wlen=0; char w[32]={0}; uint8_t chamber=0; float mass=0;
+                    if(fread(&wlen,1,1,mf)!=1) break;
+                    if(wlen>31) wlen=31;
+                    if(fread(w,1,wlen,mf)!=wlen) break;
+                    w[wlen]=0;
+                    if(fread(&chamber,1,1,mf)!=1||fread(&mass,4,1,mf)!=1) break;
+                    if(chamber<6) periodic_add(&pt,w,(int)chamber,mass);
+                }
+                printf("  [periodic: %d elements loaded]\n",pt.n);
+            }
         }
         fclose(mf);
     }}
@@ -1119,7 +1167,15 @@ int main(int argc, char **argv){
         for(int i=0;i<mw->n_bi;i++){fwrite(&mw->bigrams[i].a,4,1,mf);fwrite(&mw->bigrams[i].b,4,1,mf);fwrite(&mw->bigrams[i].prob,4,1,mf);}
         for(int i=0;i<mw->n_tri;i++){fwrite(&mw->trigrams[i].a,4,1,mf);fwrite(&mw->trigrams[i].b,4,1,mf);fwrite(&mw->trigrams[i].c,4,1,mf);fwrite(&mw->trigrams[i].prob,4,1,mf);}
         for(int i=0;i<mw->n_hebb;i++){fwrite(&mw->hebbs[i].a,4,1,mf);fwrite(&mw->hebbs[i].b,4,1,mf);fwrite(&mw->hebbs[i].str,4,1,mf);}
-        fclose(mf);printf("  [memory saved: %d bi, %d tri, %d hebb → q.memory]\n",mw->n_bi,mw->n_tri,mw->n_hebb);
+        /* save periodic table */
+        fwrite(&pt.n,4,1,mf);
+        for(int i=0;i<pt.n;i++){
+            uint8_t wlen=(uint8_t)strlen(pt.elements[i].word);
+            fwrite(&wlen,1,1,mf);fwrite(pt.elements[i].word,1,wlen,mf);
+            uint8_t chamber=(uint8_t)pt.elements[i].chamber;
+            fwrite(&chamber,1,1,mf);fwrite(&pt.elements[i].mass,4,1,mf);
+        }
+        fclose(mf);printf("  [memory saved: %d bi, %d tri, %d hebb, %d periodic → q.memory]\n",mw->n_bi,mw->n_tri,mw->n_hebb,pt.n);
     }}
     printf("\nresonance is unbreakable.\n");
     free(cids);free(mw);return 0;
