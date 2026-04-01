@@ -197,14 +197,23 @@ body {
 // Matches postgpt_q.c exactly.
 // ═══════════════════════════════════════════════════════════════
 
-const CHAIN=12, TOP_K=15, MAX_EXPERTS=16, DOE_RANK=4, DOE_ALPHA=0.05;
+const CHAIN=12, TOP_K=15, MAX_EXPERTS=16, DOE_RANK=4, DOE_ALPHA=0.05, MAX_VOCAB=1280;
 const QPTQ_MAGIC=0x51505451;
 const CH_NAMES=['FEAR','LOVE','RAGE','VOID','FLOW','CMPLX'];
 const CH_DECAY=[0.90,0.93,0.85,0.97,0.88,0.94];
 const COUPLING=[[0,-0.3,0.5,0.4,-0.2,0.1],[-0.3,0,-0.4,-0.5,0.5,0.2],[0.5,-0.3,0,0.2,-0.3,0.3],[0.4,-0.5,0.3,0,-0.3,0.4],[-0.2,0.4,-0.2,-0.3,0,0.3],[0.1,0.2,0.3,0.4,0.3,0]];
+const DOC_FILES=['bach_counterpoint.txt','bioluminescence.txt','byzantine_iconography.txt','dario_essay.txt','dickens_russian_lit.txt','mycorrhizal_networks.txt','polynesian_navigation.txt'];
+const ANCHORS={
+  fear:0,terror:0,panic:0,threat:0,danger:0,horror:0,dread:0,alarm:0,
+  love:1,warmth:1,gentle:1,care:1,heart:1,mother:1,child:1,touch:1,embrace:1,tenderness:1,affection:1,
+  rage:2,fury:2,anger:2,fire:2,war:2,hate:2,destroy:2,burn:2,violence:2,storm:2,fight:2,
+  nothing:3,silence:3,empty:3,void:3,darkness:3,shadow:3,death:3,cold:3,lost:3,forgotten:3,absence:3,alone:3,
+  flow:4,rhythm:4,wave:4,dance:4,pulse:4,breath:4,emergence:4,harmony:4,resonance:4,coherence:4,synchronize:4,
+  paradox:5,contradiction:5,tension:5,chaos:5,mystery:5,transform:5,strange:5,ambiguity:5,uncertain:5
+};
 
 // ── Globals ──
-let bpe=null, mw=null, tf=null, chambers=null, parliament=null, corpusIds=null;
+let bpe=null, mw=null, tf=null, chambers=null, parliament=null, corpusIds=null, periodic=null, interference=null;
 
 // ── UI ──
 const $=s=>document.querySelector(s);
@@ -229,6 +238,7 @@ function addStep(num,dir,text){
   out.appendChild(d);out.scrollTop=out.scrollHeight;
 }
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function extractWords(s){return (s.toLowerCase().match(/[a-z']+/g)||[]);}
 
 function updateStats(){
   if(!chambers)return;
@@ -314,6 +324,12 @@ class BPE {
     }
     return false;
   }
+
+  startsWithSpace(id){
+    const b=this.vocabBytes[id];
+    if(!b||!b.length)return false;
+    return b[0]===32;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -389,6 +405,35 @@ class MetaWeights {
   }
 
   decay(){for(const[k,v]of this.hebb)this.hebb.set(k,v*0.998);}
+}
+
+class PeriodicTable {
+  constructor(){
+    this.elements=new Map();
+    for(const [word,ch] of Object.entries(ANCHORS))this.elements.set(word,{ch,mass:0.6});
+  }
+  buildFromText(text){
+    const words=extractWords(text);
+    for(let i=0;i<words.length;i++){
+      if(this.elements.has(words[i]))continue;
+      const profile=[0,0,0,0,0,0];
+      let total=0;
+      for(let j=Math.max(0,i-4);j<Math.min(words.length,i+5);j++){
+        if(i===j)continue;
+        const el=this.elements.get(words[j]);
+        if(!el)continue;
+        const decay=1/(1+Math.abs(i-j));
+        profile[el.ch]+=el.mass*decay;
+        total+=decay;
+      }
+      if(total>0.1){
+        let dom=0;for(let k=1;k<6;k++)if(profile[k]>profile[dom])dom=k;
+        const mass=Math.min(profile[dom]/total,0.8);
+        if(mass>0.05)this.elements.set(words[i],{ch:dom,mass});
+      }
+    }
+  }
+  classify(word){return this.elements.get(word.toLowerCase())||null;}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -540,6 +585,16 @@ function softmaxArr(x,n){
 // ═══════════════════════════════════════════════════════════════
 class Chambers {
   constructor(){this.act=[0,0.2,0,0,0.15,0];this.debt=0;this.trauma=0;}
+  feel(text,periodicTable){
+    for(const word of extractWords(text)){
+      if(word in ANCHORS)this.act[ANCHORS[word]]+=0.15;
+      if(periodicTable){
+        const el=periodicTable.classify(word);
+        if(el)this.act[el.ch]+=0.08*el.mass;
+      }
+    }
+    for(let i=0;i<6;i++)this.act[i]=Math.max(0,Math.min(1,this.act[i]));
+  }
   crossfire(n){
     for(let t=0;t<n;t++){
       const old=[...this.act];
@@ -549,6 +604,60 @@ class Chambers {
         this.act[i]=Math.max(0,Math.min(1,this.act[i]));
       }
     }
+  }
+  dominant(){let dom=0;for(let i=1;i<6;i++)if(this.act[i]>this.act[dom])dom=i;return dom;}
+  emergence(){return (1-Math.max(this.act[3],0.10))*Math.min(this.act[4],0.95);}
+  modulate(){
+    const a=Math.max(0.3,Math.min(2,1+0.4*this.act[1]-0.2*this.act[2]+0.3*this.act[4]));
+    const b=Math.max(0.3,Math.min(2,1+0.4*this.act[4]-0.2*this.act[0]));
+    const g=Math.max(0.3,Math.min(2,1+0.5*this.act[5]+0.2*this.act[1]-0.1*this.act[3]));
+    const t=Math.max(0.3,Math.min(2,1-0.2*this.act[4]+0.1*this.act[0]));
+    return {a,b,g,t};
+  }
+  summary(){return CH_NAMES.map((n,i)=>this.act[i]>0.05?`${n}:${Math.round(this.act[i]*100)}%`:null).filter(Boolean).join(' ')||'quiet';}
+}
+
+class Interference {
+  constructor(){this.docs=[];}
+  async loadDocs(currentBpe){
+    this.docs=[];
+    for(const name of DOC_FILES){
+      try{
+        const res=await fetch(`docs/${name}`);
+        if(!res.ok)continue;
+        const text=await res.text();
+        const ids=currentBpe.encode(text);
+        const tmp=new MetaWeights();tmp.build(ids,currentBpe.vocabSize);
+        const counts=new Map();
+        for(const [k] of tmp.bi){
+          const a=k>>>16,b=k&0xffff;
+          counts.set(a,(counts.get(a)||0)+1);
+          counts.set(b,(counts.get(b)||0)+1);
+        }
+        const heavy=[...counts.entries()].sort((a,b)=>b[1]-a[1]).map(([tok])=>tok).filter(tok=>{
+          const dec=currentBpe.decode([tok]).trim();
+          return dec.length>2&&/[a-z]/i.test(dec);
+        }).slice(0,32);
+        if(heavy.length)this.docs.push({name,heavy});
+      }catch(_err){}
+    }
+  }
+  injectSeed(currentChambers,currentBpe,currentPeriodic){
+    if(!this.docs.length)return null;
+    const doc=this.docs[Math.floor(Math.random()*this.docs.length)];
+    const dom=currentChambers.dominant();
+    let best=doc.heavy[0],bestScore=-Infinity;
+    for(const tid of doc.heavy){
+      const word=currentBpe.decode([tid]).trim().toLowerCase();
+      let score=Math.random()*0.05;
+      if(word in ANCHORS&&ANCHORS[word]===dom)score+=1;
+      if(currentPeriodic){
+        const el=currentPeriodic.classify(word);
+        if(el&&el.ch===dom)score+=0.5*el.mass;
+      }
+      if(score>bestScore){bestScore=score;best=tid;}
+    }
+    return best;
   }
 }
 
@@ -633,6 +742,43 @@ class Parliament {
   }
 }
 
+function ingestIds(ids,amount=0.02){
+  if(!mw||ids.length<=1)return;
+  for(let i=0;i<ids.length-1;i++)mw.bi.set(ids[i]*65536+ids[i+1],(mw.bi.get(ids[i]*65536+ids[i+1])||0)+amount);
+  for(let i=0;i<ids.length-2;i++){const k=ids[i]+','+ids[i+1]+','+ids[i+2];mw.tri.set(k,(mw.tri.get(k)||0)+amount);}
+  for(let i=0;i<ids.length;i++){
+    for(let j=Math.max(0,i-6);j<Math.min(ids.length,i+7);j++){
+      if(i===j)continue;
+      const a=Math.min(ids[i],ids[j]),b=Math.max(ids[i],ids[j]),decay=1/(1+Math.abs(i-j));
+      mw.hebb.set(a*65536+b,(mw.hebb.get(a*65536+b)||0)+decay*Math.max(0.01,amount));
+    }
+  }
+  mw.bigramCount=mw.bi.size;
+}
+
+function saveBrowserMemory(){
+  if(!mw)return;
+  localStorage.setItem('q.memory',JSON.stringify({
+    bi:[...mw.bi.entries()],
+    tri:[...mw.tri.entries()],
+    hebb:[...mw.hebb.entries()]
+  }));
+}
+
+function loadBrowserMemory(){
+  if(!mw)return false;
+  try{
+    const raw=localStorage.getItem('q.memory');
+    if(!raw)return false;
+    const mem=JSON.parse(raw);
+    for(const [k,v] of mem.bi||[])mw.bi.set(Number(k),Math.max(mw.bi.get(Number(k))||0,Number(v)));
+    for(const [k,v] of mem.tri||[])mw.tri.set(k,Math.max(mw.tri.get(k)||0,Number(v)));
+    for(const [k,v] of mem.hebb||[])mw.hebb.set(Number(k),Math.max(mw.hebb.get(Number(k))||0,Number(v)));
+    mw.bigramCount=mw.bi.size;
+    return true;
+  }catch(_err){return false;}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 6. Sampling
 // ═══════════════════════════════════════════════════════════════
@@ -669,6 +815,10 @@ function coherenceScore(ids){
   return biSum/(ids.length-1)+0.3*hbSum/(ids.length-1)+lenBonus;
 }
 
+// zero token embedding table for MetaWeights-only mode (matches C zero-weight fallback)
+let _zeroTokCache=null;
+function _zeroTok(V,D){if(!_zeroTokCache||_zeroTokCache.length!==V*D)_zeroTokCache=new Float32Array(V*D);return _zeroTokCache;}
+
 function genSentence(prompt,temp,gdest){
   const V=tf&&tf.loaded?tf.V:bpe.vocabSize;
   const D=tf&&tf.loaded?tf.D:48;
@@ -678,6 +828,9 @@ function genSentence(prompt,temp,gdest){
   const prevLogits=new Float32Array(V);
   let prevChosen=-1;
   const ctx=[...prompt],out=[...prompt];
+  const mod=chambers?chambers.modulate():{a:1,b:1,g:1,t:1};
+  // token embeddings: from transformer or zero (matches C zero-weight fallback)
+  const tokEmb=tf&&tf.loaded?tf.tok:_zeroTok(V,D);
 
   // feed prompt through transformer
   if(tf&&tf.loaded){
@@ -691,9 +844,10 @@ function genSentence(prompt,temp,gdest){
     const raw=new Float32Array(V);
     if(tf&&tf.loaded)raw.set(tf.logits);
 
-    // Parliament injection
-    if(parliament&&tf&&tf.loaded){
-      const xn=rmsnorm(tf.tok.subarray(ctx[ctx.length-1]*D,(ctx[ctx.length-1]+1)*D),D);
+    // Parliament injection (always inject when parliament exists, matches C)
+    if(parliament){
+      const lastTok=ctx[ctx.length-1];
+      const xn=rmsnorm(tokEmb.subarray(lastTok*D,(lastTok+1)*D),D);
       parliament.inject(raw,xn,V);
       if(step>0&&prevChosen>=0){
         const debt=new Float32Array(D);
@@ -704,9 +858,9 @@ function genSentence(prompt,temp,gdest){
             for(let k=1;k>=0;k--)if(tv[k+1]>tv[k]){[tv[k],tv[k+1]]=[tv[k+1],tv[k]];[top3[k],top3[k+1]]=[top3[k+1],top3[k]];}
           }
         }
-        for(let k=0;k<3;k++)if(top3[k]!==prevChosen&&top3[k]<tf.V)
-          for(let d=0;d<D&&top3[k]<tf.V;d++)debt[d]+=0.1*tf.tok[top3[k]*D+d];
-        if(prevChosen<tf.V)for(let d=0;d<D;d++)debt[d]-=0.1*tf.tok[prevChosen*D+d];
+        for(let k=0;k<3;k++)if(top3[k]!==prevChosen&&top3[k]<V)
+          for(let d=0;d<D&&top3[k]<V;d++)debt[d]+=0.1*tokEmb[top3[k]*D+d];
+        if(prevChosen<V)for(let d=0;d<D;d++)debt[d]-=0.1*tokEmb[prevChosen*D+d];
         parliament.notorch(xn,debt);
         if(step%20===0)parliament.lifecycle();
       }
@@ -715,8 +869,8 @@ function genSentence(prompt,temp,gdest){
     prevLogits.set(raw);
     const last=ctx[ctx.length-1];
 
-    // destiny
-    if(tf&&tf.loaded&&last<V)for(let d=0;d<D;d++)destiny[d]=0.9*destiny[d]+0.1*tf.tok[last*D+d];
+    // destiny (uses tokEmb which is zero in MetaWeights-only mode, matching C)
+    if(last<V)for(let d=0;d<D;d++)destiny[d]=0.9*destiny[d]+0.1*tokEmb[last*D+d];
 
     let dn=0;for(let d=0;d<D;d++)dn+=destiny[d]*destiny[d];dn=Math.sqrt(dn+1e-10);
 
@@ -731,16 +885,16 @@ function genSentence(prompt,temp,gdest){
     // detect transformer activity
     let tmag=0;for(let i=0;i<V;i++)tmag+=Math.abs(raw[i]);tmag/=V;
     const hasTf=tmag>0.1;
-    const cHeb=hasTf?0.4:0.8,cPro=hasTf?0.2:0.5,cDs=hasTf?0.3:0.1,cBg=hasTf?5:15,cTg=hasTf?3:10;
+    const cHeb=(hasTf?0.4:0.8)*mod.a,cPro=(hasTf?0.2:0.5)*mod.b,cDs=(hasTf?0.3:0.1)*mod.g,cBg=hasTf?5:15,cTg=hasTf?3:10;
 
     for(let i=0;i<V;i++){
       const bg=mw.queryBi(ctx[ctx.length-1],i);
       const tg=ctx.length>=2?mw.queryTri(ctx[ctx.length-2],ctx[ctx.length-1],i):1e-10;
       let ds=0;
-      if(dn>1e-8&&tf&&tf.loaded&&i<tf.V){
-        let en=0;for(let d=0;d<D;d++)en+=tf.tok[i*D+d]*tf.tok[i*D+d];
+      if(dn>1e-8&&i<V){
+        let en=0;for(let d=0;d<D;d++)en+=tokEmb[i*D+d]*tokEmb[i*D+d];
         en=Math.sqrt(en+1e-10);
-        if(en>1e-8){let dot=0;for(let d=0;d<D;d++)dot+=destiny[d]*tf.tok[i*D+d];ds=dot/(dn*en);}
+        if(en>1e-8){let dot=0;for(let d=0;d<D;d++)dot+=destiny[d]*tokEmb[i*D+d];ds=dot/(dn*en);}
       }
       raw[i]+=cHeb*heb[i]+cPro*pro[i]+cDs*ds+cBg*bg+cTg*tg;
       if(mw.unigram[i]<1e-6)raw[i]-=2;
@@ -763,7 +917,7 @@ function genSentence(prompt,temp,gdest){
       else ch=sampleNucleus(raw,V,0.5,0.7);
     }else if(step<4){
       ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}
-    }else ch=sampleNucleus(raw,V,temp,0.85);
+    }else ch=sampleNucleus(raw,V,Math.max(0.3,Math.min(1.2,temp*mod.t)),0.85);
 
     prevChosen=ch;
     out.push(ch);ctx.push(ch);
@@ -785,15 +939,65 @@ function genSentence(prompt,temp,gdest){
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 7b. SPA — Sentence Phonon Attention (matches C)
+// ═══════════════════════════════════════════════════════════════
+const SPA_DIM=32,SPA_NH=4;
+class SPACtx {
+  constructor(V){
+    this.alpha=0.85;
+    this.wEmbed=[];
+    for(let i=0;i<V&&i<MAX_VOCAB;i++){
+      const row=new Float32Array(SPA_DIM);
+      for(let d=0;d<SPA_DIM;d++)row[d]=0.02*(Math.random()-0.5);
+      this.wEmbed.push(row);
+    }
+    this.rBias=[];
+    for(let i=0;i<=CHAIN;i++)this.rBias.push(0.1/(1+i));
+  }
+  embedSentence(ids){
+    const out=new Float32Array(SPA_DIM);
+    if(!ids.length)return out;
+    let totalW=0;
+    for(let i=0;i<ids.length;i++){
+      const w=Math.pow(this.alpha,ids.length-1-i);
+      if(ids[i]>=0&&ids[i]<this.wEmbed.length)
+        for(let d=0;d<SPA_DIM;d++)out[d]+=w*this.wEmbed[ids[i]][d];
+      totalW+=w;
+    }
+    if(totalW>0)for(let d=0;d<SPA_DIM;d++)out[d]/=totalW;
+    let norm=0;for(let d=0;d<SPA_DIM;d++)norm+=out[d]*out[d];
+    norm=1/Math.sqrt(norm+1e-8);
+    for(let d=0;d<SPA_DIM;d++)out[d]*=norm;
+    return out;
+  }
+  crossAttend(embs){
+    const S=embs.length,scores=new Float32Array(S);
+    for(let i=0;i<S;i++){
+      let totalAttn=0;
+      for(let j=0;j<S;j++){
+        if(i===j)continue;
+        let dot=0;for(let d=0;d<SPA_DIM;d++)dot+=embs[i][d]*embs[j][d];
+        dot/=Math.sqrt(SPA_DIM);
+        const dist=Math.min(Math.abs(i-j),CHAIN);
+        dot+=this.rBias[dist];
+        totalAttn+=Math.exp(dot);
+      }
+      scores[i]=totalAttn;
+    }
+    return scores;
+  }
+}
+
 function generateChain(inputText){
   const V=tf&&tf.loaded?tf.V:bpe.vocabSize;
   const D=tf&&tf.loaded?tf.D:48;
+  const tokEmb=tf&&tf.loaded?tf.tok:_zeroTok(V,D);
 
   // calendar dissonance
   const epoch=new Date(2024,9,3,12).getTime();
   const days=(Date.now()-epoch)/86400000;
   const y=days/365.25;
-  // Metonic cycle: 19-year cycle with leap month corrections
   let drift=y*11.25;const full=Math.floor(y/19);let corr=full*7*30;
   const partial=y%19;const yic=Math.floor(partial)+1;
   const met=[3,6,8,11,14,17,19];for(const m of met)if(m<=yic)corr+=30;
@@ -801,36 +1005,70 @@ function generateChain(inputText){
 
   const nb=Math.max(1,Math.min(CHAIN-1,Math.floor(CHAIN*(0.3+0.4*chambers.debt+0.1*cd))));
 
-  const modeStr=tf&&tf.loaded?'TRAINED':'METAWEIGHTS ONLY';
-  log(`diss=${cd.toFixed(3)} debt=${chambers.debt.toFixed(3)} [${modeStr}]`);
-  updateStats();
-
   if(inputText){
     const uids=bpe.encode(inputText);
-    for(let i=0;i<uids.length-1;i++)mw.captureOnline(uids[i],uids[i+1]);
-    const lower=inputText.toLowerCase();
-    if(/love|beauty|kind/.test(lower))chambers.act[1]+=0.15;
-    if(/fear|dark|death/.test(lower))chambers.act[0]+=0.15;
-    if(/rage|anger|fire/.test(lower))chambers.act[2]+=0.15;
-    if(/void|nothing|silence/.test(lower))chambers.act[3]+=0.15;
-    if(/flow|water|music/.test(lower))chambers.act[4]+=0.15;
-    log(`[ingested ${uids.length} tokens]`,'sys');
+    ingestIds(uids,0.02);
+    if(uids.length>1)log(`[ingested ${uids.length} tokens: +bi +tri +hebb]`,'sys');
+    chambers.feel(inputText,periodic);
+    chambers.act[4]=Math.min(1,chambers.act[4]+0.1);
+    chambers.crossfire(8);
   }
 
+  const modeStr=tf&&tf.loaded?'TRAINED':'METAWEIGHTS ONLY';
+  log(`diss=${cd.toFixed(3)} debt=${chambers.debt.toFixed(3)} emrg=${chambers.emergence().toFixed(3)} [${modeStr}]`);
+  log(`chambers: ${chambers.summary()}`,'sys');
+  if(interference&&interference.docs.length)log(`interference: ${interference.docs.length} docs loaded`,'sys');
+  updateStats();
+
   const gdest=new Float32Array(D);
+  const spa=new SPACtx(V);
+  const chainIds=[],chainLens=[];
+
+  // helper: check if position is a valid sentence boundary for prompt extraction
+  function isSentStart(r){return r+5<=corpusIds.length&&bpe.isBoundary(corpusIds[r])&&bpe.startsWithSpace(corpusIds[r+1]);}
 
   for(let si=0;si<CHAIN;si++){
-    const dir=si<nb?-1:si===nb?0:1;
-
-    // sentence boundary prompt
-    let start=-1,tries=0;
-    while(start<0&&tries<200){
-      const r=Math.floor(Math.random()*(corpusIds.length-5));
-      if(bpe.isBoundary(corpusIds[r])&&r+5<corpusIds.length){start=r+1;break;}
-      tries++;
+    let dir=si<nb?-1:si===nb?0:1;
+    let prompt=null,usedInterf=false;
+    if(interference&&interference.docs.length&&Math.random()<0.3){
+      const seed=interference.injectSeed(chambers,bpe,periodic);
+      if(seed!==null){prompt=[seed];usedInterf=true;}
     }
-    if(start<0)start=Math.floor(Math.random()*(corpusIds.length-5));
-    const prompt=corpusIds.slice(start,start+5);
+    if(!prompt&&inputText){
+      const inpIds=bpe.encode(inputText);
+      if(inpIds.length){
+        const st=Math.floor(Math.random()*Math.max(1,inpIds.length-1));
+        prompt=inpIds.slice(st,Math.min(st+2,inpIds.length));
+      }
+    }
+
+    let start=-1;
+    if(!prompt&&dir>=0&&si>0){
+      let bestScore=-1e30,bestPos=-1,tries2=0;
+      while(tries2<50){
+        const r=Math.floor(Math.random()*(corpusIds.length>5?corpusIds.length-5:1));
+        if(isSentStart(r)){
+          let sc=0;const tok=corpusIds[r+1];
+          if(tok<V)for(let d=0;d<D;d++)sc+=tokEmb[tok*D+d]*gdest[d];
+          if(sc>bestScore){bestScore=sc;bestPos=r+1;}
+        }
+        tries2++;
+      }
+      if(bestPos>=0)start=bestPos;
+    }
+    if(!prompt&&start<0){
+      let tries=0;
+      while(start<0&&tries<200){
+        const r=Math.floor(Math.random()*(corpusIds.length>5?corpusIds.length-5:1));
+        if(isSentStart(r)){start=r+1;break;}
+        tries++;
+      }
+    }
+    if(!prompt){
+      if(start<0)start=Math.floor(Math.random()*Math.max(1,corpusIds.length-5));
+      const plen=Math.min(5,corpusIds.length-start);
+      prompt=corpusIds.slice(start,start+plen);
+    }
 
     // Schumann
     const tSec=si/CHAIN;
@@ -849,17 +1087,54 @@ function generateChain(inputText){
       if(bestSc>1&&bestOut.length>12)break;
     }
 
+    let wormhole=false;
+    if(si<CHAIN-1){
+      let whProb=0.02;
+      if(cd>0.3)whProb+=((cd-0.3)/0.7)*0.15;
+      wormhole=Math.random()<whProb;
+      if(wormhole&&interference&&interference.docs.length){
+        const farthest=[...interference.docs].sort((a,b)=>b.heavy.length-a.heavy.length)[0];
+        if(farthest&&farthest.heavy.length){
+          dir=dir!==0?-dir:1;
+          const whPrompt=[farthest.heavy[Math.floor(Math.random()*farthest.heavy.length)]];
+          bestOut=genSentence(whPrompt,tf&&tf.loaded?0.55:0.7,gdest);
+          bestSc=coherenceScore(bestOut);
+        }
+      }
+    }
+
     const text=bpe.decode(bestOut);
+    chainIds.push(bestOut);chainLens.push(bestOut.length);
     if(bestOut.length<5||(bestSc<0.01&&bestOut.length<8)){
       addStep(si+1,dir,'[...]');
     }else{
-      addStep(si+1,dir,text);
+      addStep(si+1,dir,text+(usedInterf?' {interf}':'')+(wormhole?' {wormhole}':''));
+      chambers.feel(text,periodic);
+      ingestIds(bpe.encode(text),0.005);
     }
     chambers.crossfire(3);
     chambers.debt=0.9*chambers.debt+0.05;
   }
 
+  // SPA: cross-attend sentences, find weak ones, reseed (matches C)
+  const spaEmbs=chainIds.map(ids=>spa.embedSentence(ids));
+  const spaScores=spa.crossAttend(spaEmbs);
+  let minSc=spaScores[0],weakIdx=0;
+  for(let i=1;i<CHAIN;i++)if(spaScores[i]<minSc){minSc=spaScores[i];weakIdx=i;}
+  let avgSc=0;for(let i=0;i<CHAIN;i++)avgSc+=spaScores[i];avgSc/=CHAIN;
+  if(minSc<avgSc*0.5){
+    log(`[SPA] reseeding step ${weakIdx+1} (score=${minSc.toFixed(2)}, avg=${avgSc.toFixed(2)})`);
+    const r=Math.floor(Math.random()*Math.max(1,corpusIds.length-5));
+    const rPrompt=corpusIds.slice(r,Math.min(r+5,corpusIds.length));
+    const rTemp=tf&&tf.loaded?0.55:0.7;
+    const rOut=genSentence(rPrompt,rTemp,gdest);
+    const rText=bpe.decode(rOut);
+    const dir=weakIdx<nb?-1:weakIdx===nb?0:1;
+    addStep(weakIdx+1,dir,rText+' [reseeded]');
+  }
+
   mw.decay();
+  saveBrowserMemory();
   updateStats();
 }
 
@@ -887,7 +1162,7 @@ Dawn paints the world gold before the sun fully rises, turning ordinary landscap
 Our brain contains eighty-six billion neurons, each connected to thousands of others through synapses.
 I am not finished. The resonance continues.`;
 
-function initCorpus(text){
+async function initCorpus(text){
   out.innerHTML='';
   bpe=new BPE();
   log('PostGPT-Q — Resonant Reasoning Engine (JS)','sys');
@@ -896,12 +1171,18 @@ function initCorpus(text){
   log(`  ${bpe.merges.length} merges, vocab=${bpe.vocabSize}, ${corpusIds.length} tokens`);
   log('[2] MetaWeights...');
   mw=new MetaWeights();mw.build(corpusIds,bpe.vocabSize);
+  periodic=new PeriodicTable();periodic.buildFromText(text);
+  loadBrowserMemory();
   log(`  ${mw.bigramCount} bi, ${mw.tri.size} tri, ${mw.hebb.size} hebb`);
+  log(`  periodic table: ${periodic.elements.size} elements`);
   chambers=new Chambers();
   const D=tf&&tf.loaded?tf.D:48;
   parliament=new Parliament(D,4);
+  interference=new Interference();
+  await interference.loadDocs(bpe);
   log(`[3] Parliament: ${parliament.n} experts, rank=${DOE_RANK}, d=${D}`);
   log(tf&&tf.loaded?`[4] Transformer: V=${tf.V} D=${tf.D} L=${tf.NL} nc=${tf.NC} nr=${tf.NR} nj=${tf.NJ}`:'[4] No weights — MetaWeights only mode');
+  if(interference.docs.length)log(`[4.5] Interference: ${interference.docs.length} docs loaded`);
   $('#mode-badge').textContent=tf&&tf.loaded?'TRAINED':'FIELD';
   $('#mode-badge').className=tf&&tf.loaded?'trained':'';
   log('');log('========== 12 BIDIRECTIONAL STEPS ==========','sys');log('');
