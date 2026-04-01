@@ -2,3 +2,4 @@
 *.safetensors
 *.gguf
 q.memory
+tests/run_tests
