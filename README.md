@@ -63,6 +63,7 @@ Q carries a compact **DoE-lite parliament** rather than the full standalone `DOE
 
 - **Election**: each expert produces output via low-rank A@B projection. Votes are turned into an entropy-sensitive variable-`k` election — divided parliament means more voices, agreement means fewer
 - **NOTORCH**: Hebbian update from prophecy debt (predicted vs actual logits). No backward pass. The parliament learns from every generated token
+- **Plasticity consolidation**: expert traces accumulate tiny NOTORCH updates until a critical mass forms, then quietly consolidate into weights. Experience does not just perturb the parliament; it crystallizes inside it
 - **Lifecycle**: overload-driven mitosis and delayed apoptosis. Experts accumulate overload when they dominate too often, split once that pressure matures, and die only after sustained low contribution
 - **Telemetry**: the browser engine exposes live parliament telemetry so you can watch winners, diversity, births, and deaths as resonance statistics rather than hidden internals
 

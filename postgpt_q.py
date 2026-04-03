@@ -1314,6 +1314,7 @@ class Expert:
     def __init__(self):
         self.A = []
         self.B = []
+        self.trace = []
         self.d_in = 0
         self.d_out = 0
         self.rank = 0
@@ -1322,17 +1323,22 @@ class Expert:
         self.low_steps = 0
         self.overload = 0.0
         self.resonance = 0.0
+        self.plasticity_mass = 0.0
+        self.consolidations = 0
 def expert_init(e, d_in, d_out, rank):
     e.d_in = d_in
     e.d_out = d_out
     e.rank = rank
     e.A = [0.01 * (random.random() - 0.5) for _ in range(rank * d_in)]
     e.B = [0.01 * (random.random() - 0.5) for _ in range(d_out * rank)]
+    e.trace = [0.0] * (rank * d_in)
     e.vitality = 1.0
     e.age = 0
     e.low_steps = 0
     e.overload = 0.0
     e.resonance = 0.0
+    e.plasticity_mass = 0.0
+    e.consolidations = 0
 def expert_forward(e, x):
     mid = [0.0] * e.rank
     for r in range(e.rank):
@@ -1357,9 +1363,28 @@ def expert_hebbian(e, x, dy, lr):
         u += 0.01 * (random.random() - 0.5)
         base_a = r * e.d_in
         for d in range(e.d_in):
-            e.A[base_a + d] += lr * x[d] * u
+            delta = lr * x[d] * u
+            e.A[base_a + d] += delta
+            e.trace[base_a + d] = 0.96 * e.trace[base_a + d] + 0.04 * delta
+            e.plasticity_mass += abs(delta)
         for o in range(e.d_out):
             e.B[o * e.rank + r] *= 0.999
+def expert_consolidate(e):
+    if e.plasticity_mass < 0.002:
+        return False
+    norm = sum(abs(v) for v in e.trace) / max(1, len(e.trace))
+    if norm < 1e-8:
+        return False
+    gain = min(0.12, 0.02 + 0.35 * e.plasticity_mass)
+    for i in range(len(e.trace)):
+        e.A[i] += gain * e.trace[i] / norm
+        e.trace[i] *= 0.45
+    e.vitality = clampf(e.vitality + 0.04, 0.0, 1.0)
+    e.overload *= 0.88
+    e.resonance = clampf(e.resonance + 0.03, -1.0, 1.0)
+    e.plasticity_mass *= 0.35
+    e.consolidations += 1
+    return True
 class Parliament:
     def __init__(self):
         self.ex = []
@@ -1371,6 +1396,7 @@ class Parliament:
         self.last_entropy = 0.0
         self.last_diversity = 0.0
         self.last_winners = []
+        self.last_consolidations = 0
 def parl_init(p, d_model, n_init):
     p.d_model = d_model
     p.alpha = DOE_ALPHA
@@ -1379,6 +1405,7 @@ def parl_init(p, d_model, n_init):
     p.last_entropy = 0.0
     p.last_diversity = 0.0
     p.last_winners = []
+    p.last_consolidations = 0
     p.n = min(n_init, MAX_EXPERTS)
     p.ex = []
     for _ in range(p.n):
@@ -1478,8 +1505,11 @@ def parl_notorch(p, x, debt, dlen):
     ds = [0.0] * p.d_model
     for i in range(n):
         ds[i] = debt[i]
+    p.last_consolidations = 0
     for i in range(p.n):
         expert_hebbian(p.ex[i], x, ds, 0.001)
+        if p.ex[i].plasticity_mass > 0.003 and expert_consolidate(p.ex[i]):
+            p.last_consolidations += 1
         p.ex[i].age += 1
 def parl_lifecycle(p):
     # apoptosis

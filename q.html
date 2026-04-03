@@ -269,7 +269,7 @@ function updateStats(){
   h+=`<span style="color:var(--dim)">debt=${chambers.debt.toFixed(3)} trauma=${chambers.trauma.toFixed(3)}</span>`;
   if(parliament){
     const winners=parliament.lastWinners?parliament.lastWinners.length:0;
-    h+=` <span style="color:var(--dim)">parl:${winners}/${parliament.n} avg_v=${parliament.avgVitality().toFixed(2)} div=${parliament.lastDiversity.toFixed(2)} +${parliament.lastBirths||0} -${parliament.lastDeaths||0}</span>`;
+    h+=` <span style="color:var(--dim)">parl:${winners}/${parliament.n} avg_v=${parliament.avgVitality().toFixed(2)} div=${parliament.lastDiversity.toFixed(2)} +${parliament.lastBirths||0} -${parliament.lastDeaths||0} cons=${parliament.lastConsolidations||0}</span>`;
   }
   if(mw) h+=` <span style="color:var(--dim)">bi:${mw.bigramCount}</span>`;
   stats.innerHTML=h;
@@ -922,9 +922,10 @@ class Expert {
   constructor(d,rank){
     this.d=d;this.rank=rank;
     this.A=new Float32Array(rank*d);this.B=new Float32Array(d*rank);
+    this.trace=new Float32Array(rank*d);
     for(let i=0;i<rank*d;i++)this.A[i]=0.01*(Math.random()-0.5);
     for(let i=0;i<d*rank;i++)this.B[i]=0.01*(Math.random()-0.5);
-    this.vitality=1;this.overload=0;this.resonance=0;this.age=0;this.lowSteps=0;
+    this.vitality=1;this.overload=0;this.resonance=0;this.age=0;this.lowSteps=0;this.plasticityMass=0;this.consolidations=0;
   }
   forward(x){
     const mid=new Float32Array(this.rank);
@@ -937,15 +938,34 @@ class Expert {
     for(let r=0;r<this.rank;r++){
       let u=0;for(let o=0;o<this.d;o++)u+=this.B[o*this.rank+r]*dy[o];
       u+=0.01*(Math.random()-0.5);
-      for(let d=0;d<this.d;d++)this.A[r*this.d+d]+=lr*x[d]*u;
+      for(let d=0;d<this.d;d++){
+        const idx=r*this.d+d, delta=lr*x[d]*u;
+        this.A[idx]+=delta;
+        this.trace[idx]=0.96*this.trace[idx]+0.04*delta;
+        this.plasticityMass+=Math.abs(delta);
+      }
       for(let o=0;o<this.d;o++)this.B[o*this.rank+r]*=0.999;
     }
+  }
+  consolidate(){
+    if(this.plasticityMass<0.002)return false;
+    let norm=0;for(let i=0;i<this.trace.length;i++)norm+=Math.abs(this.trace[i]);
+    norm/=Math.max(1,this.trace.length);
+    if(norm<1e-8)return false;
+    const gain=Math.max(0,Math.min(0.12,0.02+0.35*this.plasticityMass));
+    for(let i=0;i<this.trace.length;i++){this.A[i]+=gain*this.trace[i]/norm;this.trace[i]*=0.45;}
+    this.vitality=Math.max(0,Math.min(1,this.vitality+0.04));
+    this.overload*=0.88;
+    this.resonance=Math.max(-1,Math.min(1,this.resonance+0.03));
+    this.plasticityMass*=0.35;
+    this.consolidations++;
+    return true;
   }
 }
 
 class Parliament {
   constructor(d,nInit=4){
-    this.d=d;this.experts=[];this.n=nInit;this.lastK=0;this.lastEntropy=0;this.lastDiversity=0;this.lastWinners=[];this.lastBirths=0;this.lastDeaths=0;
+    this.d=d;this.experts=[];this.n=nInit;this.lastK=0;this.lastEntropy=0;this.lastDiversity=0;this.lastWinners=[];this.lastBirths=0;this.lastDeaths=0;this.lastConsolidations=0;
     for(let i=0;i<nInit;i++)this.experts.push(new Expert(d,DOE_RANK));
   }
   avgVitality(){if(!this.n)return 0;let s=0;for(let i=0;i<this.n;i++)s+=this.experts[i].vitality;return s/this.n;}
@@ -1012,7 +1032,8 @@ class Parliament {
     for(let i=0;i<n;i++)logits[i]+=DOE_ALPHA*delta[i];
   }
   notorch(x,debt){
-    for(let i=0;i<this.n;i++){this.experts[i].hebbian(x,debt);this.experts[i].age++;}
+    this.lastConsolidations=0;
+    for(let i=0;i<this.n;i++){this.experts[i].hebbian(x,debt);if(this.experts[i].plasticityMass>0.003&&this.experts[i].consolidate())this.lastConsolidations++;this.experts[i].age++;}
   }
   lifecycle(){
     const before=this.experts.length;

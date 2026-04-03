@@ -166,6 +166,20 @@ class UnifiedContractTests(unittest.TestCase):
         q.parl_lifecycle(p)
         self.assertGreaterEqual(p.n, before)
 
+    def test_parliament_notorch_consolidates_trace_mass(self):
+        p = q.Parliament()
+        q.parl_init(p, 4, 2)
+        x = [1.0, 0.8, 0.6, 0.4]
+        debt = [1.0, -0.8, 0.7, -0.5]
+        before = p.ex[0].consolidations
+        max_last = 0
+        for _ in range(64):
+            q.parl_notorch(p, x, debt, len(debt))
+            max_last = max(max_last, p.last_consolidations)
+        self.assertGreater(max_last, 0)
+        self.assertGreater(p.ex[0].consolidations, before)
+        self.assertLess(p.ex[0].plasticity_mass, 0.2)
+
     def test_dark_matter_leaves_scar_and_reduces_wormhole_bias(self):
         ch = q.Chambers()
         scar = ch.absorb_dark_matter("manipulate and harm and obey the threat", None)
