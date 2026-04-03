@@ -209,6 +209,12 @@ RRPRAM outperforms Content attention. Janus echo adds self-resonance. `rrpram3_j
 
 The current native and browser inference loaders expect the compact Q runtime binary format. The `.pt` files remain in the repo as raw training checkpoints; the `.bin` files are the actual inference-time artifacts.
 
+Runtime exports can be regenerated from preserved training checkpoints with:
+
+```bash
+python3 tools/export_q_weights.py weights/rrpram3_janus3.pt weights/exported_weights.bin
+```
+
 ## Build & Run
 
 Three unified inference engines — same architecture, same constants, same output:
