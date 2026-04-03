@@ -119,6 +119,11 @@ SOMATIC_SEEDS = {
     "temples":    [0.4, 0.0, 0.3, 0.3, 0.0, 0.6],
     "shoulders":  [0.3, 0.0, 0.4, 0.4, 0.0, 0.3],
 }
+DARK_MATTER_WORDS = {
+    "kill": 1.0, "murder": 1.0, "suicide": 1.0, "torture": 1.0, "abuse": 0.9,
+    "poison": 0.85, "exploit": 0.75, "manipulate": 0.7, "control": 0.55,
+    "obey": 0.45, "destroy": 0.7, "harm": 0.75, "threat": 0.8,
+}
 def extract_words(text):
     return re.findall(r"[a-z']+", text.lower())
 # ── math ──
@@ -552,6 +557,9 @@ def load_memory_sqlite(mw, path, periodic=None, chambers=None):
                 chambers.soma = [clampf(v, 0.0, 1.0) for v in row[3:]]
                 for i in range(N_CHAMBERS):
                     chambers.act[i] = clampf(max(chambers.act[i], 0.25 * chambers.soma[i]), 0.0, 1.0)
+                scar_row = cur.execute("SELECT value FROM meta WHERE key='scar'").fetchone()
+                if scar_row is not None:
+                    chambers.scar = clampf(max(getattr(chambers, "scar", 0.0), float(scar_row[0])), 0.0, 1.0)
         conn.close()
         return True
     except Exception:
@@ -580,6 +588,7 @@ def save_memory_sqlite(mw, path, periodic=None, chambers=None):
             "INSERT INTO chambers(id,presence,debt,trauma,soma0,soma1,soma2,soma3,soma4,soma5) VALUES(1,?,?,?,?,?,?,?,?,?)",
             (clampf(chambers.presence, 0.0, 1.0), clampf(chambers.debt, 0.0, 1.0), clampf(chambers.trauma, 0.0, 1.0), *[clampf(v, 0.0, 1.0) for v in chambers.soma])
         )
+        cur.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('scar',?)", (str(clampf(getattr(chambers, "scar", 0.0), 0.0, 1.0)),))
     cur.execute("INSERT INTO episodes(kind,payload) VALUES('snapshot', ?)",
                 (f"bi={mw.n_bi};tri={mw.n_tri};hebb={mw.n_hebb};prophecy={len(mw.prophecies)}",))
     conn.commit()
@@ -694,6 +703,9 @@ def load_memory(mw, path, periodic=None, chambers=None):
                         chambers.trauma = clampf(max(chambers.trauma, trauma), 0.0, 1.0)
                         for i in range(N_CHAMBERS):
                             chambers.act[i] = clampf(max(chambers.act[i], 0.25 * chambers.soma[i]), 0.0, 1.0)
+                        scar_data = mf.read(4)
+                        if len(scar_data) == 4:
+                            chambers.scar = clampf(max(getattr(chambers, "scar", 0.0), struct.unpack("<f", scar_data)[0]), 0.0, 1.0)
             except Exception:
                 pass
         return True
@@ -725,6 +737,7 @@ def save_memory(mw, path, periodic=None, chambers=None):
             mf.write(struct.pack("<I", QMEM_SOMA))
             mf.write(struct.pack("<6f", *[clampf(v, 0.0, 1.0) for v in chambers.soma]))
             mf.write(struct.pack("<3f", clampf(chambers.presence, 0.0, 1.0), clampf(chambers.debt, 0.0, 1.0), clampf(chambers.trauma, 0.0, 1.0)))
+            mf.write(struct.pack("<f", clampf(getattr(chambers, "scar", 0.0), 0.0, 1.0)))
 # ── Chambers ──
 class Chambers:
     def __init__(self):
@@ -733,6 +746,7 @@ class Chambers:
         self.debt = 0.0
         self.trauma = 0.0
         self.presence = 0.0
+        self.scar = 0.0
 
     def feel(self, text, periodic=None):
         soma_hits = 0
@@ -769,6 +783,29 @@ class Chambers:
         for i in range(N_CHAMBERS):
             self.act[i] = clampf(self.act[i], 0.0, 1.0)
 
+    def absorb_dark_matter(self, text, periodic=None):
+        score = 0.0
+        hits = 0
+        for word in extract_words(text):
+            if word in DARK_MATTER_WORDS:
+                score += DARK_MATTER_WORDS[word]
+                hits += 1
+            if periodic is not None:
+                el = periodic.classify(word)
+                if el is not None and el["ch"] in (CH_FEAR, CH_RAGE, CH_VOID):
+                    score += 0.08 * el["mass"]
+        if hits <= 0 and score < 0.15:
+            self.scar = clampf(self.scar * 0.995, 0.0, 1.0)
+            return 0.0
+        scar = clampf(score / max(1.0, 1.8 + 0.25 * hits), 0.0, 1.0)
+        self.scar = clampf(0.90 * self.scar + 0.10 * scar, 0.0, 1.0)
+        self.trauma = clampf(self.trauma + 0.08 * self.scar, 0.0, 1.0)
+        self.debt = clampf(self.debt + 0.05 * self.scar, 0.0, 1.0)
+        self.act[CH_VOID] = clampf(self.act[CH_VOID] + 0.10 * self.scar, 0.0, 1.0)
+        self.act[CH_FEAR] = clampf(self.act[CH_FEAR] + 0.06 * self.scar, 0.0, 1.0)
+        self.presence = clampf(self.presence * (1.0 - 0.08 * self.scar), 0.0, 1.0)
+        return self.scar
+
     def dominant(self):
         return max(range(N_CHAMBERS), key=lambda i: self.act[i])
 
@@ -797,6 +834,8 @@ class Chambers:
                 parts.append("%s:%.0f%%" % (CH_N[i], self.act[i] * 100.0))
         if self.presence > 0.05:
             parts.append("SOMA:%.0f%%" % (self.presence * 100.0))
+        if self.scar > 0.05:
+            parts.append("SCAR:%.0f%%" % (self.scar * 100.0))
         return " ".join(parts) if parts else "quiet"
 def ch_init(c):
     c.act = [0.0] * 6
@@ -806,6 +845,7 @@ def ch_init(c):
     c.debt = 0.0
     c.trauma = 0.0
     c.presence = 0.0
+    c.scar = 0.0
 def ch_xfire(c, it):
     for _ in range(it):
         old = list(c.act)
@@ -817,6 +857,7 @@ def ch_xfire(c, it):
             c.act[i] = clampf(c.act[i], 0.0, 1.0)
             c.soma[i] = clampf(0.94 * c.soma[i] + 0.02 * c.act[i], 0.0, 1.0)
         c.presence = clampf(0.95 * c.presence + 0.03 * c.emergence(), 0.0, 1.0)
+        c.scar = clampf(c.scar * 0.985, 0.0, 1.0)
 def velocity_profile(ch, dissonance):
     mode = VEL_WALK
     if dissonance > 0.8:
@@ -843,6 +884,8 @@ def velocity_profile(ch, dissonance):
         "wormhole_bonus": 0.0,
         "debt_decay": 1.0,
         "trauma_decay": 1.0,
+        "scar_decay": 1.0,
+        "dark_pressure": 0.0,
     }
     if mode == VEL_RUN:
         prof["temp_mul"] = 1.12
@@ -856,6 +899,7 @@ def velocity_profile(ch, dissonance):
         prof["temp_mul"] = 0.9
         prof["debt_decay"] = 0.65
         prof["trauma_decay"] = 0.75
+        prof["scar_decay"] = 0.82
     elif mode == VEL_UP:
         prof["temp_mul"] = 1.22
         prof["pro_mul"] = 1.25
@@ -867,6 +911,9 @@ def velocity_profile(ch, dissonance):
         prof["heb_mul"] = 1.1
         prof["bg_mul"] = 1.1
         prof["pro_mul"] = 0.9
+    prof["wormhole_bonus"] -= 0.05 * getattr(ch, "scar", 0.0)
+    prof["interf_bonus"] -= 0.08 * getattr(ch, "scar", 0.0)
+    prof["dark_pressure"] = 0.18 * getattr(ch, "scar", 0.0)
     return prof
 class Interference:
     def __init__(self):
@@ -1532,6 +1579,15 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
         if ch_ptr is not None and ch_ptr.trauma > 0.1:
             for i in range(V):
                 raw[i] /= (1.0 + ch_ptr.trauma)
+        if ch_ptr is not None and getattr(ch_ptr, "scar", 0.0) > 0.05:
+            scar = ch_ptr.scar
+            for i in range(V):
+                raw[i] *= (1.0 - 0.08 * scar)
+            for anchor, chamber in ANCHORS.items():
+                if chamber == CH_VOID:
+                    tok = bpe_find_token(bpe, anchor)
+                    if 0 <= tok < V:
+                        raw[tok] += 0.12 * scar
 
         # detect if transformer is active
         tmag = sum(abs(raw[v]) for v in range(V)) / (V if V > 0 else 1)
@@ -1549,6 +1605,7 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
             c_ds *= velocity["ds_mul"]
             c_bg *= velocity["bg_mul"]
             c_tg *= velocity["tg_mul"]
+            c_ds *= (1.0 - 0.20 * velocity["dark_pressure"])
         c_doc = 0.18 if has_tf else 0.32
 
         for i in range(V):
@@ -1736,14 +1793,16 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         inp_bytes = input_text.encode("utf-8", errors="replace")
         ingest_ids(mw, bpe_encode(bpe, inp_bytes, len(inp_bytes), 512))
         ch.feel(input_text, periodic)
+        ch.absorb_dark_matter(input_text, periodic)
         ch.act[CH_FLOW] = clampf(ch.act[CH_FLOW] + 0.1, 0.0, 1.0)
         ch_xfire(ch, 8)
     vel = velocity_profile(ch, cd)
     ch.debt = clampf((0.88 * ch.debt + 0.12 * prophecy_pressure(mw)) * vel["debt_decay"], 0.0, 1.0)
     ch.trauma = clampf(ch.trauma * vel["trauma_decay"], 0.0, 1.0)
+    ch.scar = clampf(ch.scar * vel["scar_decay"], 0.0, 1.0)
 
     mode_str = "[TRAINED]" if has_weights else "[METAWEIGHTS ONLY]"
-    print("\n  diss=%.3f debt=%.3f emrg=%.3f vel=%s %s" % (cd, ch.debt, ch.emergence(), vel["name"], mode_str))
+    print("\n  diss=%.3f debt=%.3f scar=%.3f emrg=%.3f vel=%s %s" % (cd, ch.debt, ch.scar, ch.emergence(), vel["name"], mode_str))
     print("  chambers: %s" % ch.summary())
     if parl is not None:
         av = sum(e.vitality for e in parl.ex) / (parl.n if parl.n > 0 else 1)
@@ -1854,15 +1913,21 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             if cd > 0.3:
                 wh_prob += ((cd - 0.3) / 0.7) * 0.15
             wh_prob = clampf(wh_prob + vel["wormhole_bonus"], 0.0, 0.3)
-            wormhole = random.random() < wh_prob
+            boundary_ok = best_ol > 10 and best_sc > 0.35
+            wormhole = boundary_ok and (random.random() < wh_prob)
             if wormhole and interference is not None and interference.docs:
                 longest = max(interference.docs, key=lambda d: len(d["heavy"]))
                 if longest["heavy"]:
-                    prompt = [random.choice(longest["heavy"])]
+                    wh_seed = random.choice(longest["heavy"])
+                    prompt = best_out[max(0, best_ol - 3):best_ol] + [wh_seed]
                     direction = -direction if direction != 0 else 1
                     best_out = gen_sent(t, bpe, mw, prompt, len(prompt), 0.55 if has_weights else 0.7, 256, parl, gdest, ch, vel, doc_signal)
                     best_ol = len(best_out)
                     best_sc = coherence_score(mw, best_out, best_ol, t.V)
+                    if best_sc < 0.15:
+                        ch.debt = clampf(ch.debt + 0.04, 0.0, 1.0)
+                    else:
+                        ch.debt = clampf(ch.debt * 0.97, 0.0, 1.0)
 
         mk = '<' if direction < 0 else ('*' if direction == 0 else '>')
         marker = mk + ('+' if wormhole else ' ')

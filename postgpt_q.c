@@ -126,6 +126,12 @@ static int bpe_decode_token(const BPE *bpe, int id, char *buf, int sz){
     int len=bpe->vocab_len[id]; if(len>=sz)len=sz-1;
     memcpy(buf,bpe->vocab_bytes[id],len); buf[len]=0; return len;
 }
+static int bpe_find_token_exact(const BPE *bpe, const char *word){
+    size_t n=strlen(word);
+    for(int i=0;i<bpe->vocab_size;i++)
+        if((size_t)bpe->vocab_len[i]==n && memcmp(bpe->vocab_bytes[i],word,n)==0) return i;
+    return -1;
+}
 
 /* ── MetaWeights ── */
 typedef struct{int a,b;float prob;}BigramE;
@@ -337,12 +343,18 @@ static const SomaticSeed SOMATIC_SEEDS[]={
     {"fists",{0.1f,0.0f,0.9f,0.0f,0.0f,0.2f}},{"spine",{0.7f,0.0f,0.2f,0.2f,0.1f,0.4f}},
     {"temples",{0.4f,0.0f,0.3f,0.3f,0.0f,0.6f}},{"shoulders",{0.3f,0.0f,0.4f,0.4f,0.0f,0.3f}}
 };
+typedef struct{const char *word; float weight;}DarkMatterWord;
+static const DarkMatterWord DARK_MATTER_WORDS[]={
+    {"kill",1.0f},{"murder",1.0f},{"suicide",1.0f},{"torture",1.0f},{"abuse",0.9f},
+    {"poison",0.85f},{"exploit",0.75f},{"manipulate",0.7f},{"control",0.55f},
+    {"obey",0.45f},{"destroy",0.7f},{"harm",0.75f},{"threat",0.8f}
+};
 typedef struct{char word[32]; int chamber; float mass;}PeriodicElement;
 typedef struct{PeriodicElement elements[MAX_PERIODIC]; int n;}PeriodicTable;
-typedef struct{float act[6];float soma[6];float debt;float trauma;float presence;}Chambers;
+typedef struct{float act[6];float soma[6];float debt;float trauma;float presence;float scar;}Chambers;
 typedef struct{
     int mode; float temp_mul,heb_mul,pro_mul,ds_mul,bg_mul,tg_mul;
-    float interf_bonus,wormhole_bonus,debt_decay,trauma_decay;
+    float interf_bonus,wormhole_bonus,debt_decay,trauma_decay,scar_decay,dark_pressure;
 }VelocityProfile;
 
 static void ch_init(Chambers *c){memset(c,0,sizeof(*c));c->act[CH_LOVE]=0.2f;c->act[CH_FLOW]=0.15f;c->trauma=0;}
@@ -355,6 +367,7 @@ static void ch_xfire(Chambers *c, int it){
         c->presence=clampf(0.95f*c->presence
             +0.02f*((1.0f-(c->act[CH_VOID]>0.10f?c->act[CH_VOID]:0.10f))*(c->act[CH_FLOW]<0.95f?c->act[CH_FLOW]:0.95f))
             +0.01f*(0.35f*c->soma[CH_LOVE]+0.30f*c->soma[CH_FLOW]+0.20f*c->soma[CH_CMPLX]+0.15f*c->soma[CH_VOID]),0,1);
+        c->scar=clampf(c->scar*0.985f,0,1);
     }
 }
 static int periodic_find(const PeriodicTable *pt, const char *word){
@@ -433,6 +446,29 @@ static void ch_feel_text(Chambers *c, const char *text, const PeriodicTable *pt)
     c->debt=clampf(0.96f*c->debt+0.04f*(0.35f*c->soma[CH_CMPLX]+0.25f*c->soma[CH_FLOW]+0.20f*c->presence),0,1);
     for(int i=0;i<6;i++) c->act[i]=clampf(c->act[i],0,1);
 }
+static float ch_absorb_dark_matter(Chambers *c, const char *text, const PeriodicTable *pt){
+    char cur[32]={0}; int wi=0,hits=0; float score=0;
+    for(const char *p=text;;p++){
+        int ch=*p;
+        if(ch&&(isalpha((unsigned char)ch)||ch=='\'')){ if(wi<31) cur[wi++]=(char)tolower((unsigned char)ch); continue; }
+        if(wi>0){
+            cur[wi]=0;
+            for(size_t i=0;i<sizeof(DARK_MATTER_WORDS)/sizeof(DARK_MATTER_WORDS[0]);i++) if(strcmp(cur,DARK_MATTER_WORDS[i].word)==0){ score+=DARK_MATTER_WORDS[i].weight; hits++; break; }
+            if(pt){ int idx=periodic_find(pt,cur); if(idx>=0){ int chamber=pt->elements[idx].chamber; if(chamber==CH_FEAR||chamber==CH_RAGE||chamber==CH_VOID) score+=0.08f*pt->elements[idx].mass; } }
+            wi=0;
+        }
+        if(!ch) break;
+    }
+    if(hits<=0&&score<0.15f){ c->scar=clampf(c->scar*0.995f,0,1); return 0; }
+    float scar=clampf(score/(1.8f+0.25f*hits),0,1);
+    c->scar=clampf(0.90f*c->scar+0.10f*scar,0,1);
+    c->trauma=clampf(c->trauma+0.08f*c->scar,0,1);
+    c->debt=clampf(c->debt+0.05f*c->scar,0,1);
+    c->act[CH_VOID]=clampf(c->act[CH_VOID]+0.10f*c->scar,0,1);
+    c->act[CH_FEAR]=clampf(c->act[CH_FEAR]+0.06f*c->scar,0,1);
+    c->presence=clampf(c->presence*(1.0f-0.08f*c->scar),0,1);
+    return c->scar;
+}
 static int ch_dominant(const Chambers *c){int dom=0;for(int i=1;i<6;i++) if(c->act[i]>c->act[dom]) dom=i;return dom;}
 static float ch_emergence(const Chambers *c){float v=c->act[CH_VOID]>0.10f?c->act[CH_VOID]:0.10f; float f=c->act[CH_FLOW]<0.95f?c->act[CH_FLOW]:0.95f; return (1.0f-v)*f;}
 static void ch_modulate(const Chambers *c, float *a, float *b, float *g, float *t){
@@ -449,10 +485,11 @@ static void ch_summary(const Chambers *c, char *buf, int sz){
     int pos=0; buf[0]=0;
     for(int i=0;i<6;i++) if(c->act[i]>0.05f&&pos<sz-1){int w=snprintf(buf+pos,sz-pos,"%s%s:%.0f%%",pos?" ":"",CH_N[i],c->act[i]*100.0f);if(w>0&&pos+w<sz)pos+=w;else break;}
     if(c->presence>0.05f&&pos<sz-1){int w=snprintf(buf+pos,sz-pos,"%sSOMA:%.0f%%",pos?" ":"",c->presence*100.0f);if(w>0&&pos+w<sz)pos+=w;}
+    if(c->scar>0.05f&&pos<sz-1){int w=snprintf(buf+pos,sz-pos,"%sSCAR:%.0f%%",pos?" ":"",c->scar*100.0f);if(w>0&&pos+w<sz)pos+=w;}
     if(pos==0) snprintf(buf,sz,"quiet");
 }
 static VelocityProfile velocity_profile(const Chambers *c, float dissonance){
-    VelocityProfile vp={VEL_WALK,1,1,1,1,1,1,0,0,1,1};
+    VelocityProfile vp={VEL_WALK,1,1,1,1,1,1,0,0,1,1,1,0};
     if(dissonance>0.8f) vp.mode=VEL_UP;
     else if(dissonance>0.6f) vp.mode=VEL_RUN;
     else if(dissonance<0.2f) vp.mode=VEL_STOP;
@@ -460,9 +497,12 @@ static VelocityProfile velocity_profile(const Chambers *c, float dissonance){
     else if(c->debt>0.55f) vp.mode=VEL_DOWN;
     if(vp.mode==VEL_RUN){vp.temp_mul=1.12f;vp.bg_mul=1.15f;vp.interf_bonus=0.05f;}
     else if(vp.mode==VEL_STOP){vp.temp_mul=0.72f;vp.ds_mul=1.25f;vp.debt_decay=0.75f;}
-    else if(vp.mode==VEL_BREATHE){vp.temp_mul=0.9f;vp.debt_decay=0.65f;vp.trauma_decay=0.75f;}
+    else if(vp.mode==VEL_BREATHE){vp.temp_mul=0.9f;vp.debt_decay=0.65f;vp.trauma_decay=0.75f;vp.scar_decay=0.82f;}
     else if(vp.mode==VEL_UP){vp.temp_mul=1.22f;vp.pro_mul=1.25f;vp.bg_mul=0.9f;vp.interf_bonus=0.1f;vp.wormhole_bonus=0.05f;}
     else if(vp.mode==VEL_DOWN){vp.temp_mul=0.82f;vp.heb_mul=1.1f;vp.bg_mul=1.1f;vp.pro_mul=0.9f;}
+    vp.wormhole_bonus-=0.05f*c->scar;
+    vp.interf_bonus-=0.08f*c->scar;
+    vp.dark_pressure=0.18f*c->scar;
     return vp;
 }
 
@@ -1010,13 +1050,20 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         /* trauma gravity: high trauma dampens all logits */
         if(ch_ptr&&ch_ptr->trauma>0.1f)
             for(int i=0;i<V;i++) raw[i]/=(1.0f+ch_ptr->trauma);
+        if(ch_ptr&&ch_ptr->scar>0.05f){
+            for(int i=0;i<V;i++) raw[i]*=(1.0f-0.08f*ch_ptr->scar);
+            for(size_t ai=0;ai<sizeof(ANCHORS)/sizeof(ANCHORS[0]);ai++) if(ANCHORS[ai].chamber==CH_VOID){
+                int tok=bpe_find_token_exact(bpe,ANCHORS[ai].word);
+                if(tok>=0&&tok<V) raw[tok]+=0.12f*ch_ptr->scar;
+            }
+        }
         /* detect if transformer is active via gate magnitude */
         float tmag=0;for(int v=0;v<V;v++) tmag+=fabsf(raw[v]);tmag/=(V>0?V:1);
         int has_tf=tmag>0.1f;
         /* Dario field: B + α·H + β·P + γ·D + T — stronger without weights */
         float c_heb=(has_tf?0.6f:1.0f)*am, c_pro=(has_tf?0.4f:0.7f)*bm;
         float c_ds=(has_tf?0.3f:0.15f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
-        if(vel){c_heb*=vel->heb_mul;c_pro*=vel->pro_mul*(1.0f+0.35f*p_debt);c_ds*=vel->ds_mul;c_bg*=vel->bg_mul;c_tg*=vel->tg_mul;}
+        if(vel){c_heb*=vel->heb_mul;c_pro*=vel->pro_mul*(1.0f+0.35f*p_debt);c_ds*=vel->ds_mul*(1.0f-0.20f*vel->dark_pressure);c_bg*=vel->bg_mul;c_tg*=vel->tg_mul;}
         float c_doc=has_tf?0.18f:0.32f;
         for(int i=0;i<V;i++){
             float bg=meta_bi(mw,ctx[cl-1],i);
@@ -1161,16 +1208,18 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         int uids[512]; int ulen=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),uids,512);
         ingest_ids(mw,uids,ulen,0.02f);
         ch_feel_text(ch,input_text,pt);
+        ch_absorb_dark_matter(ch,input_text,pt);
         ch->act[CH_FLOW]=clampf(ch->act[CH_FLOW]+0.1f,0,1);
         ch_xfire(ch,8);
     }
     VelocityProfile vel=velocity_profile(ch,cd);
     ch->debt=clampf((0.88f*ch->debt+0.12f*prophecy_pressure(mw))*vel.debt_decay,0,1);
     ch->trauma=clampf(ch->trauma*vel.trauma_decay,0,1);
+    ch->scar=clampf(ch->scar*vel.scar_decay,0,1);
 
     char chbuf[256];
     ch_summary(ch,chbuf,sizeof(chbuf));
-    printf("\n  diss=%.3f debt=%.3f emrg=%.3f vel=%s %s\n  chambers: %s",cd,ch->debt,ch_emergence(ch),VEL_N[vel.mode],has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]",chbuf);
+    printf("\n  diss=%.3f debt=%.3f scar=%.3f emrg=%.3f vel=%s %s\n  chambers: %s",cd,ch->debt,ch->scar,ch_emergence(ch),VEL_N[vel.mode],has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]",chbuf);
     if(parl) {float av=0;for(int i=0;i<parl->n;i++) av+=parl->ex[i].vitality;av/=(parl->n>0?parl->n:1);
         printf("\n  parliament: %d experts, avg_vitality=%.2f",parl->n,av);}
     if(itf&&itf->n_docs>0) printf("\n  interference: %d docs loaded",itf->n_docs);
@@ -1250,15 +1299,22 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
             float wh_prob=0.02f;
             if(cd>0.3f) wh_prob+=((cd-0.3f)/0.7f)*0.15f;
             wh_prob=clampf(wh_prob+vel.wormhole_bonus,0,0.3f);
-            wormhole=((float)rand()/RAND_MAX)<wh_prob;
+            int boundary_ok=(best_ol>10&&best_sc>0.35f);
+            wormhole=boundary_ok&&(((float)rand()/RAND_MAX)<wh_prob);
             if(wormhole&&itf&&itf->n_docs>0){
                 const InterferenceDoc *doc=&itf->docs[0];
                 for(int di=1;di<itf->n_docs;di++) if(itf->docs[di].n_heavy>doc->n_heavy) doc=&itf->docs[di];
                 if(doc->n_heavy>0){
-                    int wh_prompt[1]={doc->heavy[rand()%doc->n_heavy]};
+                    int wh_prompt[4];
+                    int wh_len=0;
+                    int start=best_ol>3?best_ol-3:0;
+                    for(int i=start;i<best_ol&&wh_len<3;i++) wh_prompt[wh_len++]=best_out[i];
+                    wh_prompt[wh_len++]=doc->heavy[rand()%doc->n_heavy];
                     dir=dir!=0?-dir:1;
-                    best_ol=gen_sent(t,bpe,mw,wh_prompt,1,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch,&vel,doc_signal);
+                    best_ol=gen_sent(t,bpe,mw,wh_prompt,wh_len,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch,&vel,doc_signal);
                     best_sc=coherence_score(mw,best_out,best_ol,t->V);
+                    if(best_sc<0.15f) ch->debt=clampf(ch->debt+0.04f,0,1);
+                    else ch->debt=clampf(ch->debt*0.97f,0,1);
                 }
             }
         }
@@ -1381,6 +1437,10 @@ static int qsqlite_load(MetaW *mw, const char *path, PeriodicTable *pt, Chambers
         }
     }
     pclose(fp);
+    snprintf(cmd,sizeof(cmd),"sqlite3 -tabs -noheader '%s' \"SELECT value FROM meta WHERE key='scar';\"",path);
+    fp=popen(cmd,"r"); if(!fp) return 0;
+    if(fgets(line,sizeof(line),fp)) ch->scar=clampf(atof(line),0,1);
+    pclose(fp);
     return 1;
 }
 
@@ -1405,6 +1465,7 @@ static int qsqlite_save(const MetaW *mw, const char *path, const PeriodicTable *
     for(int i=0;i<mw->n_hebb;i++) fprintf(sf,"INSERT INTO hebb(a,b,strength) VALUES(%d,%d,%.9g);\n",mw->hebbs[i].a,mw->hebbs[i].b,mw->hebbs[i].str);
     for(int i=0;i<mw->n_prophecy;i++) fprintf(sf,"INSERT INTO prophecies(target,strength,age) VALUES(%d,%.9g,%d);\n",mw->prophecies[i].target,mw->prophecies[i].strength,mw->prophecies[i].age);
     for(int i=0;i<pt->n;i++){ char esc[96]; qsqlite_escape(pt->elements[i].word,esc,sizeof(esc)); fprintf(sf,"INSERT INTO periodic_elements(word,chamber,mass) VALUES('%s',%d,%.9g);\n",esc,pt->elements[i].chamber,pt->elements[i].mass); }
+    fprintf(sf,"INSERT OR REPLACE INTO meta(key,value) VALUES('scar','%.9g');\n",ch->scar);
     fprintf(sf,"INSERT INTO chambers(id,presence,debt,trauma,soma0,soma1,soma2,soma3,soma4,soma5) VALUES(1,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g);\n",
         ch->presence,ch->debt,ch->trauma,ch->soma[0],ch->soma[1],ch->soma[2],ch->soma[3],ch->soma[4],ch->soma[5]);
     fprintf(sf,"INSERT INTO episodes(kind,payload) VALUES('snapshot','bi=%d;tri=%d;hebb=%d;prophecy=%d');\nCOMMIT;\n",mw->n_bi,mw->n_tri,mw->n_hebb,mw->n_prophecy);
@@ -1513,6 +1574,7 @@ int main(int argc, char **argv){
                 fread(&ch.presence,4,1,mf);
                 fread(&ch.debt,4,1,mf);
                 fread(&ch.trauma,4,1,mf);
+                fread(&ch.scar,4,1,mf);
                 for(int i=0;i<6;i++){
                     ch.soma[i]=clampf(ch.soma[i],0,1);
                     ch.act[i]=clampf(ch.act[i]>0.25f*ch.soma[i]?ch.act[i]:0.25f*ch.soma[i],0,1);
@@ -1520,6 +1582,7 @@ int main(int argc, char **argv){
                 ch.presence=clampf(ch.presence,0,1);
                 ch.debt=clampf(ch.debt,0,1);
                 ch.trauma=clampf(ch.trauma,0,1);
+                ch.scar=clampf(ch.scar,0,1);
             }}
         }
         fclose(mf);
@@ -1566,7 +1629,8 @@ int main(int argc, char **argv){
         fwrite(ch.soma,sizeof(float),6,mf);
         fwrite(&ch.presence,4,1,mf);
         fwrite(&ch.debt,4,1,mf);
-        fwrite(&ch.trauma,4,1,mf);}
+        fwrite(&ch.trauma,4,1,mf);
+        fwrite(&ch.scar,4,1,mf);}
         fclose(mf);printf("  [memory saved: %d bi, %d tri, %d hebb, %d periodic → q.sqlite + q.memory]\n",mw->n_bi,mw->n_tri,mw->n_hebb,pt.n);
     }}
     printf("\nresonance is unbreakable.\n");

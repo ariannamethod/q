@@ -104,6 +104,16 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertLess(breathe["debt_decay"], 1.0)
         self.assertLess(breathe["trauma_decay"], 1.0)
 
+    def test_dark_matter_leaves_scar_and_reduces_wormhole_bias(self):
+        ch = q.Chambers()
+        scar = ch.absorb_dark_matter("manipulate and harm and obey the threat", None)
+        self.assertGreater(scar, 0.0)
+        self.assertGreater(ch.scar, 0.0)
+        self.assertGreater(ch.trauma, 0.0)
+        prof = q.velocity_profile(ch, 0.9)
+        self.assertLess(prof["wormhole_bonus"], 0.05)
+        self.assertGreater(prof["dark_pressure"], 0.0)
+
     def test_interference_doc_selection_prefers_prompt_resonance(self):
         itf = q.Interference()
         itf.docs = [
@@ -167,6 +177,7 @@ class UnifiedContractTests(unittest.TestCase):
         pt.build_from_text("resonance rhythm paradox mystery")
         ch = q.Chambers()
         ch.feel("warmth in the throat and pressure in the chest", pt)
+        ch.absorb_dark_matter("harm obey threat", pt)
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "q.sqlite")
             q.save_memory_sqlite(mw, path, pt, ch)
@@ -178,6 +189,7 @@ class UnifiedContractTests(unittest.TestCase):
             self.assertGreaterEqual(len(loaded_mw.prophecies), 1)
             self.assertIn("resonance", loaded_pt.elements)
             self.assertGreater(loaded_ch.presence, 0.0)
+            self.assertGreater(loaded_ch.scar, 0.0)
 
 
 if __name__ == "__main__":

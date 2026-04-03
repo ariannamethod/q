@@ -90,6 +90,8 @@ Q also listens for bodily language before it speaks. A compact English somatic l
 
 This is not a second engine. Somatic resonance only biases chamber coefficients and therefore the same RRPRAM/transformer-facing logit path.
 
+Somatic processing now also leaves a **scar** when the prompt carries strong dark matter pressure. Harmful or coercive language is not simply ignored: it leaves a numeric residue that raises trauma, bends chamber state toward fear/void, and suppresses reckless tunnel behavior. The model changes from experience, but still through the same field and transformer path.
+
 ### Calendar Dissonance
 
 Hebrew-Gregorian calendar drift computed from real astronomical data (epoch: 1 Tishrei 5785 = Oct 3, 2024). Metonic cycle corrections. Drift modulates the backward/forward balance in the 12-step chain.
@@ -115,7 +117,7 @@ Chunk scoring combines:
 
 The selected chunk then nudges destiny and logits. This is not RAG and not external retrieval. The text acts as a magnetic substrate inside the same inference loop.
 
-**Wormhole**: rare event (2-17% based on calendar dissonance) that flips generation direction and jumps to the farthest document. Marked with `{wormhole}` in output.
+**Wormhole**: rare event (2-17% based on calendar dissonance) that flips generation direction and jumps into a distant continuation field. Q now enforces wormhole discipline: the jump is only allowed after a coherent enough sentence trajectory has formed, and the jump seeds from the tail of that trajectory rather than tearing through the middle. Failed long jumps increase debt; successful ones relax it. Marked with `{wormhole}` in output.
 
 ### Periodic Table (semantic classification)
 
