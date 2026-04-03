@@ -37,6 +37,7 @@
 #define MAX_PERIODIC 4096
 #define MAX_INTERF_DOCS 32
 #define MAX_HEAVY 32
+#define MAX_DOC_CHUNKS 8
 enum{VEL_WALK=0,VEL_RUN,VEL_STOP,VEL_BREATHE,VEL_UP,VEL_DOWN};
 static const char *VEL_N[]={"WALK","RUN","STOP","BREATHE","UP","DOWN"};
 
@@ -459,8 +460,70 @@ static VelocityProfile velocity_profile(const Chambers *c, float dissonance){
     return vp;
 }
 
-typedef struct{char name[64]; int heavy[MAX_HEAVY]; int n_heavy; char keywords[16][32]; int n_keywords;}InterferenceDoc;
+typedef struct{int start; int heavy[MAX_HEAVY]; int n_heavy; char keywords[16][32]; int n_keywords;}InterferenceChunk;
+typedef struct{char name[64]; int heavy[MAX_HEAVY]; int n_heavy; char keywords[16][32]; int n_keywords; InterferenceChunk chunks[MAX_DOC_CHUNKS]; int n_chunks;}InterferenceDoc;
 typedef struct{InterferenceDoc docs[MAX_INTERF_DOCS]; int n_docs;}Interference;
+
+static void interf_summarize_ids(const int *ids, int n, const BPE *bpe,
+                                 int *heavy, int *n_heavy,
+                                 char keywords[][32], int *n_keywords,
+                                 int heavy_cap, int kw_cap){
+    MetaW tmp; meta_build(&tmp,ids,n,bpe->vocab_size);
+    int toks[512], cnts[512], nt=0;
+    for(int i=0;i<tmp.n_bi&&nt<512;i++){
+        int pair[2]={tmp.bigrams[i].a,tmp.bigrams[i].b};
+        for(int pi=0;pi<2;pi++){
+            int tok=pair[pi],found=-1;
+            for(int j=0;j<nt;j++) if(toks[j]==tok){found=j;break;}
+            if(found>=0) cnts[found]++;
+            else if(nt<512){toks[nt]=tok;cnts[nt]=1;nt++;}
+        }
+    }
+    *n_heavy=0; *n_keywords=0;
+    for(int pick=0;pick<nt&&*n_heavy<heavy_cap;pick++){
+        int best=-1;
+        for(int i=0;i<nt;i++) if(cnts[i]>=0&&(best<0||cnts[i]>cnts[best]||(cnts[i]==cnts[best]&&toks[i]<toks[best]))) best=i;
+        if(best<0) break;
+        int tok=toks[best]; cnts[best]=-1;
+        char buf[64]; bpe_decode_token(bpe,tok,buf,sizeof(buf));
+        int alpha=0; for(int j=0;buf[j];j++) if(isalpha((unsigned char)buf[j])) alpha++;
+        if(alpha<=2) continue;
+        heavy[(*n_heavy)++]=tok;
+        if(*n_keywords<kw_cap){
+            for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
+            strncpy(keywords[*n_keywords],buf,31);
+            keywords[*n_keywords][31]=0;
+            (*n_keywords)++;
+        }
+    }
+    if(*n_heavy==0){
+        int lim=n<heavy_cap?n:heavy_cap;
+        for(int i=0;i<lim;i++) heavy[(*n_heavy)++]=ids[i];
+    }
+}
+
+static float interf_item_score(const int *heavy, int n_heavy, char keywords[][32], int n_keywords,
+                               const char *text, int dom, const PeriodicTable *pt,
+                               const MetaW *mw, const BPE *bpe){
+    float score=0.01f*(float)n_heavy;
+    (void)heavy;
+    for(int ki=0;ki<n_keywords;ki++){
+        const char *word=keywords[ki];
+        if(text&&strstr(text,word)) score+=1.2f;
+        for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(word,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) score+=0.6f;
+        if(pt){ int idx=periodic_find(pt,word); if(idx>=0&&pt->elements[idx].chamber==dom) score+=0.35f*pt->elements[idx].mass; }
+        if(mw&&bpe){
+            for(int pi=0;pi<mw->n_prophecy;pi++){
+                char pbuf[64]; bpe_decode_token(bpe,mw->prophecies[pi].target,pbuf,sizeof(pbuf));
+                for(int j=0;pbuf[j];j++) pbuf[j]=(char)tolower((unsigned char)pbuf[j]);
+                if(strcmp(word,pbuf)==0) score+=0.9f*mw->prophecies[pi].strength;
+            }
+        }
+    }
+    score+=0.05f*((float)rand()/RAND_MAX);
+    return score;
+}
+
 static void interf_load(Interference *itf, const char *docs_dir, const BPE *bpe){
     static const char *doc_names[]={
         "bach_counterpoint.txt","bioluminescence.txt","byzantine_iconography.txt",
@@ -473,42 +536,50 @@ static void interf_load(Interference *itf, const char *docs_dir, const BPE *bpe)
         fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
         uint8_t *raw=malloc(sz>0?sz:1); fread(raw,1,sz,f); fclose(f);
         int *ids=malloc((sz>0?sz:1)*sizeof(int)); int n=bpe_encode(bpe,raw,(int)sz,ids,(int)sz);
-        MetaW tmp; meta_build(&tmp,ids,n,bpe->vocab_size);
         InterferenceDoc *doc=&itf->docs[itf->n_docs];
         strncpy(doc->name,doc_names[di],sizeof(doc->name)-1);
-        for(int i=0;i<tmp.n_bi&&doc->n_heavy<MAX_HEAVY;i++){
-            int tok=tmp.bigrams[i].a,dup=0; char buf[64]; bpe_decode_token(bpe,tok,buf,sizeof(buf));
-            for(int j=0;j<doc->n_heavy;j++) if(doc->heavy[j]==tok){dup=1;break;}
-            int alpha=0; for(int j=0;buf[j];j++) if(isalpha((unsigned char)buf[j])) alpha++;
-            if(!dup&&alpha>2){
-                doc->heavy[doc->n_heavy++]=tok;
-                if(doc->n_keywords<16){
-                    for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
-                    strncpy(doc->keywords[doc->n_keywords],buf,31);
-                    doc->keywords[doc->n_keywords][31]=0;
-                    doc->n_keywords++;
-                }
-            }
+        interf_summarize_ids(ids,n,bpe,doc->heavy,&doc->n_heavy,doc->keywords,&doc->n_keywords,MAX_HEAVY,16);
+        for(int start=0;start<n&&doc->n_chunks<MAX_DOC_CHUNKS;start+=32){
+            int part_n=(n-start)>64?64:(n-start);
+            if(part_n<12) continue;
+            InterferenceChunk *chunk=&doc->chunks[doc->n_chunks];
+            memset(chunk,0,sizeof(*chunk));
+            chunk->start=start;
+            interf_summarize_ids(ids+start,part_n,bpe,chunk->heavy,&chunk->n_heavy,chunk->keywords,&chunk->n_keywords,16,8);
+            if(chunk->n_heavy>0) doc->n_chunks++;
+        }
+        if(doc->n_chunks==0&&doc->n_heavy>0){
+            InterferenceChunk *chunk=&doc->chunks[doc->n_chunks++];
+            memset(chunk,0,sizeof(*chunk));
+            chunk->start=0;
+            chunk->n_heavy=doc->n_heavy<16?doc->n_heavy:16;
+            memcpy(chunk->heavy,doc->heavy,chunk->n_heavy*sizeof(int));
+            chunk->n_keywords=doc->n_keywords<8?doc->n_keywords:8;
+            for(int i=0;i<chunk->n_keywords;i++){strncpy(chunk->keywords[i],doc->keywords[i],31); chunk->keywords[i][31]=0;}
         }
         if(doc->n_heavy>0) itf->n_docs++;
         free(ids); free(raw);
     }
 }
-static const InterferenceDoc *interf_choose_doc(const Interference *itf, const char *text, const Chambers *c, const PeriodicTable *pt){
+static const InterferenceDoc *interf_choose_doc(const Interference *itf, const char *text, const Chambers *c, const PeriodicTable *pt, const MetaW *mw, const BPE *bpe){
     if(!itf||itf->n_docs<=0) return NULL;
     int dom=c?ch_dominant(c):CH_FLOW;
     const InterferenceDoc *best=&itf->docs[rand()%itf->n_docs]; float best_score=-1e30f;
     for(int di=0;di<itf->n_docs;di++){
         const InterferenceDoc *doc=&itf->docs[di];
-        float score=0.01f*(float)doc->n_heavy;
-        for(int ki=0;ki<doc->n_keywords;ki++){
-            const char *word=doc->keywords[ki];
-            if(text&&strstr(text,word)) score+=1.2f;
-            for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(word,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) score+=0.6f;
-            if(pt){ int idx=periodic_find(pt,word); if(idx>=0&&pt->elements[idx].chamber==dom) score+=0.35f*pt->elements[idx].mass; }
-        }
-        score+=0.05f*((float)rand()/RAND_MAX);
+        float score=interf_item_score(doc->heavy,doc->n_heavy,doc->keywords,doc->n_keywords,text,dom,pt,mw,bpe);
         if(score>best_score){best_score=score;best=doc;}
+    }
+    return best;
+}
+static const InterferenceChunk *interf_choose_chunk(const InterferenceDoc *doc, const char *text, const Chambers *c, const PeriodicTable *pt, const MetaW *mw, const BPE *bpe){
+    if(!doc||doc->n_chunks<=0) return NULL;
+    int dom=c?ch_dominant(c):CH_FLOW;
+    const InterferenceChunk *best=&doc->chunks[0]; float best_score=-1e30f;
+    for(int ci=0;ci<doc->n_chunks;ci++){
+        const InterferenceChunk *chunk=&doc->chunks[ci];
+        float score=interf_item_score(chunk->heavy,chunk->n_heavy,chunk->keywords,chunk->n_keywords,text,dom,pt,mw,bpe);
+        if(score>best_score){best_score=score;best=chunk;}
     }
     return best;
 }
@@ -538,12 +609,34 @@ static int interf_seed_from_doc(const InterferenceDoc *doc, const Chambers *c, c
     }
     return best;
 }
+static int interf_seed_from_chunk(const InterferenceChunk *chunk, const Chambers *c, const BPE *bpe, const PeriodicTable *pt){
+    if(!chunk||chunk->n_heavy<=0) return -1;
+    int dom=ch_dominant(c),best=chunk->heavy[rand()%chunk->n_heavy]; float best_score=-1e30f;
+    for(int i=0;i<chunk->n_heavy&&i<MAX_HEAVY;i++){
+        char buf[64]; float sc=((float)rand()/RAND_MAX)*0.05f; bpe_decode_token(bpe,chunk->heavy[i],buf,sizeof(buf));
+        for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
+        for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(buf,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) sc+=1.0f;
+        if(pt){ int idx=periodic_find(pt,buf); if(idx>=0&&pt->elements[idx].chamber==dom) sc+=0.5f*pt->elements[idx].mass; }
+        if(sc>best_score){best_score=sc;best=chunk->heavy[i];}
+    }
+    return best;
+}
 static void interf_signal(const InterferenceDoc *doc, float *out, int V){
     for(int i=0;i<V;i++) out[i]=0;
     if(!doc) return;
     float mx=0;
     for(int rank=0;rank<doc->n_heavy&&rank<16;rank++){
         int tid=doc->heavy[rank];
+        if(tid>=0&&tid<V){out[tid]+=1.0f/(1.0f+(float)rank); if(out[tid]>mx) mx=out[tid];}
+    }
+    if(mx>1e-8f) for(int i=0;i<V;i++) out[i]/=mx;
+}
+static void interf_signal_chunk(const InterferenceChunk *chunk, float *out, int V){
+    for(int i=0;i<V;i++) out[i]=0;
+    if(!chunk) return;
+    float mx=0;
+    for(int rank=0;rank<chunk->n_heavy&&rank<16;rank++){
+        int tid=chunk->heavy[rank];
         if(tid>=0&&tid<V){out[tid]+=1.0f/(1.0f+(float)rank); if(out[tid]>mx) mx=out[tid];}
     }
     if(mx>1e-8f) for(int i=0;i<V;i++) out[i]/=mx;
@@ -1081,19 +1174,20 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
     int chain_ids[CHAIN_STEPS][256]; int chain_lens[CHAIN_STEPS];
     for(int si=0;si<CHAIN_STEPS;si++){
         int dir=si<nb?-1:(si==nb?0:1);
-        const InterferenceDoc *active_doc=(itf&&itf->n_docs>0)?interf_choose_doc(itf,input_text,ch,pt):NULL;
+        const InterferenceDoc *active_doc=(itf&&itf->n_docs>0)?interf_choose_doc(itf,input_text,ch,pt,mw,bpe):NULL;
+        const InterferenceChunk *active_chunk=active_doc?interf_choose_chunk(active_doc,input_text,ch,pt,mw,bpe):NULL;
         float *doc_signal=NULL;
-        if(active_doc){
+        if(active_chunk){
             doc_signal=calloc(t->V,sizeof(float));
-            interf_signal(active_doc,doc_signal,t->V);
-            if(active_doc->n_heavy>0){
-                int seed_tok=active_doc->heavy[0];
+            interf_signal_chunk(active_chunk,doc_signal,t->V);
+            if(active_chunk->n_heavy>0){
+                int seed_tok=active_chunk->heavy[0];
                 if(seed_tok>=0&&seed_tok<t->V) for(int d=0;d<t->D;d++) gdest[d]=0.97f*gdest[d]+0.03f*t->tok[seed_tok*t->D+d];
             }
         }
         int prompt[5]={0},plen=0,used_interf=0;
         if(itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<clampf(0.3f+vel.interf_bonus,0.05f,0.5f)){
-            int seed=active_doc?interf_seed_from_doc(active_doc,ch,bpe,pt):interf_seed(itf,ch,bpe,pt);
+            int seed=active_chunk?interf_seed_from_chunk(active_chunk,ch,bpe,pt):(active_doc?interf_seed_from_doc(active_doc,ch,bpe,pt):interf_seed(itf,ch,bpe,pt));
             if(seed>=0){prompt[0]=seed;plen=1;used_interf=1;}
         }
         if(plen==0&&input_text&&input_text[0]){

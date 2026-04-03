@@ -742,6 +742,25 @@ class Interference:
     def __init__(self):
         self.docs = []
 
+    def _summarize_ids(self, ids, bpe, heavy_limit=32, keyword_limit=16):
+        tmp = MetaW()
+        meta_build(tmp, ids, len(ids), bpe.vocab_size)
+        heavy = []
+        counts = {}
+        for a, b, _p in tmp.bigrams:
+            counts[a] = counts.get(a, 0) + 1
+            counts[b] = counts.get(b, 0) + 1
+        ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+        keywords = []
+        for tok, _score in ranked:
+            dec = bpe_decode_token(bpe, tok).strip()
+            if len(dec) > 2 and any(ch.isalpha() for ch in dec):
+                heavy.append(tok)
+                keywords.append(dec.lower())
+            if len(heavy) >= heavy_limit:
+                break
+        return {"heavy": heavy or ids[:heavy_limit], "keywords": keywords[:keyword_limit]}
+
     def load_docs(self, docs_dir, bpe):
         self.docs = []
         if not os.path.isdir(docs_dir):
@@ -756,49 +775,83 @@ class Interference:
             except OSError:
                 continue
             ids = bpe_encode(bpe, raw, len(raw), len(raw))
-            tmp = MetaW()
-            meta_build(tmp, ids, len(ids), bpe.vocab_size)
-            heavy = []
-            counts = {}
-            for a, b, _p in tmp.bigrams:
-                counts[a] = counts.get(a, 0) + 1
-                counts[b] = counts.get(b, 0) + 1
-            ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
-            keywords = []
-            for tok, _score in ranked:
-                dec = bpe_decode_token(bpe, tok).strip()
-                if len(dec) > 2 and any(ch.isalpha() for ch in dec):
-                    heavy.append(tok)
-                    keywords.append(dec.lower())
-                if len(heavy) >= 32:
+            doc = {"name": fn, **self._summarize_ids(ids, bpe, 32, 16), "chunks": []}
+            chunk_len = 64
+            stride = 32
+            for start in range(0, len(ids), stride):
+                part = ids[start:start + chunk_len]
+                if len(part) < 12:
+                    continue
+                chunk = self._summarize_ids(part, bpe, 16, 8)
+                if chunk["heavy"]:
+                    chunk["start"] = start
+                    doc["chunks"].append(chunk)
+                if len(doc["chunks"]) >= 8:
                     break
-            self.docs.append({"name": fn, "heavy": heavy or ids[:32], "keywords": keywords[:16]})
+            if not doc["chunks"] and doc["heavy"]:
+                doc["chunks"].append({"start": 0, "heavy": doc["heavy"][:16], "keywords": doc["keywords"][:8]})
+            self.docs.append(doc)
 
-    def choose_doc(self, text=None, chambers=None, periodic=None):
+    def _score_item(self, item, words, dom, periodic, prophecy_words):
+        score = 0.01 * len(item.get("heavy", []))
+        for word in item.get("keywords", []):
+            if word in words:
+                score += 1.2
+            if word in ANCHORS and ANCHORS[word] == dom:
+                score += 0.6
+            if periodic is not None:
+                el = periodic.classify(word)
+                if el is not None and el["ch"] == dom:
+                    score += 0.35 * el["mass"]
+            if word in prophecy_words:
+                score += 0.9 * prophecy_words[word]
+        score += random.random() * 0.05
+        return score
+
+    def _prophecy_words(self, mw, bpe):
+        out = {}
+        if mw is None:
+            return out
+        for target, strength, _age in mw.prophecies:
+            word = bpe_decode_token(bpe, target).strip().lower()
+            if len(word) > 2 and any(ch.isalpha() for ch in word):
+                out[word] = max(out.get(word, 0.0), strength)
+        return out
+
+    def choose_doc(self, text=None, chambers=None, periodic=None, mw=None, bpe=None):
         if not self.docs:
             return None
         if chambers is None and not text:
             return random.choice(self.docs)
         words = set(extract_words(text or ""))
         dom = chambers.dominant() if chambers is not None else CH_FLOW
+        prophecy_words = self._prophecy_words(mw, bpe) if bpe is not None else {}
         best_doc = None
         best_score = -1e30
         for doc in self.docs:
-            score = 0.01 * len(doc["heavy"])
-            for word in doc.get("keywords", []):
-                if word in words:
-                    score += 1.2
-                if word in ANCHORS and ANCHORS[word] == dom:
-                    score += 0.6
-                if periodic is not None:
-                    el = periodic.classify(word)
-                    if el is not None and el["ch"] == dom:
-                        score += 0.35 * el["mass"]
-            score += random.random() * 0.05
+            score = self._score_item(doc, words, dom, periodic, prophecy_words)
             if score > best_score:
                 best_score = score
                 best_doc = doc
         return best_doc
+
+    def choose_chunk(self, doc, text=None, chambers=None, periodic=None, mw=None, bpe=None):
+        if doc is None:
+            return None
+        chunks = doc.get("chunks") or []
+        if not chunks:
+            return doc
+        words = set(extract_words(text or ""))
+        dom = chambers.dominant() if chambers is not None else CH_FLOW
+        prophecy_words = self._prophecy_words(mw, bpe) if bpe is not None else {}
+        best_chunk = chunks[0]
+        best_score = -1e30
+        for chunk in chunks:
+            score = self._score_item(chunk, words, dom, periodic, prophecy_words)
+            if score > best_score:
+                best_score = score
+                best_chunk = chunk
+        return best_chunk
 
     def inject_seed(self, chambers=None, bpe=None, periodic=None, doc=None):
         if not self.docs and doc is None:
@@ -1581,18 +1634,19 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         else:
             direction = 1
 
-        active_doc = interference.choose_doc(input_text, ch, periodic) if interference is not None and interference.docs else None
-        if active_doc is not None and t.D > 0 and active_doc.get("heavy"):
-            seed_tok = active_doc["heavy"][0]
+        active_doc = interference.choose_doc(input_text, ch, periodic, mw, bpe) if interference is not None and interference.docs else None
+        active_chunk = interference.choose_chunk(active_doc, input_text, ch, periodic, mw, bpe) if active_doc is not None else None
+        if active_chunk is not None and t.D > 0 and active_chunk.get("heavy"):
+            seed_tok = active_chunk["heavy"][0]
             if 0 <= seed_tok < t.V:
                 for d in range(t.D):
                     gdest[d] = 0.97 * gdest[d] + 0.03 * t.tok[seed_tok * t.D + d]
-        doc_signal = interference_signal(active_doc, t.V) if active_doc is not None else None
+        doc_signal = interference_signal(active_chunk, t.V) if active_chunk is not None else None
 
         prompt = None
         used_interference = False
         if interference is not None and interference.docs and random.random() < clampf(0.3 + vel["interf_bonus"], 0.05, 0.5):
-            seed = interference.inject_seed(ch, bpe, periodic, active_doc)
+            seed = interference.inject_seed(ch, bpe, periodic, active_chunk or active_doc)
             if seed is not None:
                 prompt = [seed]
                 used_interference = True

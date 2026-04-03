@@ -731,6 +731,23 @@ function velocityProfile(currentChambers,dissonance){
 
 class Interference {
   constructor(){this.docs=[];}
+  summarizeIds(ids,currentBpe,heavyLimit=32,keywordLimit=16){
+    const tmp=new MetaWeights();tmp.build(ids,currentBpe.vocabSize);
+    const counts=new Map();
+    for(const [k] of tmp.bi){
+      const a=k>>>16,b=k&0xffff;
+      counts.set(a,(counts.get(a)||0)+1);
+      counts.set(b,(counts.get(b)||0)+1);
+    }
+    const words=[...counts.entries()].sort((a,b)=>b[1]-a[1]).map(([tok])=>{
+      const dec=currentBpe.decode([tok]).trim().toLowerCase();
+      return {tok,dec};
+    }).filter(x=>x.dec.length>2&&/[a-z]/i.test(x.dec)).slice(0,heavyLimit);
+    return {
+      heavy:words.length?words.map(x=>x.tok):ids.slice(0,heavyLimit),
+      keywords:words.map(x=>x.dec).slice(0,keywordLimit)
+    };
+  }
   async loadDocs(currentBpe){
     this.docs=[];
     for(const name of DOC_FILES){
@@ -739,40 +756,69 @@ class Interference {
         if(!res.ok)continue;
         const text=await res.text();
         const ids=currentBpe.encode(text);
-        const tmp=new MetaWeights();tmp.build(ids,currentBpe.vocabSize);
-        const counts=new Map();
-        for(const [k] of tmp.bi){
-          const a=k>>>16,b=k&0xffff;
-          counts.set(a,(counts.get(a)||0)+1);
-          counts.set(b,(counts.get(b)||0)+1);
+        const doc={name,...this.summarizeIds(ids,currentBpe,32,16),chunks:[]};
+        const chunkLen=64,stride=32;
+        for(let start=0;start<ids.length;start+=stride){
+          const part=ids.slice(start,start+chunkLen);
+          if(part.length<12)continue;
+          const chunk=this.summarizeIds(part,currentBpe,16,8);
+          if(chunk.heavy.length){
+            chunk.start=start;
+            doc.chunks.push(chunk);
+          }
+          if(doc.chunks.length>=8)break;
         }
-        const words=[...counts.entries()].sort((a,b)=>b[1]-a[1]).map(([tok])=>{
-          const dec=currentBpe.decode([tok]).trim().toLowerCase();
-          return {tok,dec};
-        }).filter(x=>x.dec.length>2&&/[a-z]/i.test(x.dec)).slice(0,32);
-        const heavy=words.map(x=>x.tok);
-        const keywords=words.map(x=>x.dec).slice(0,16);
-        if(heavy.length)this.docs.push({name,heavy,keywords});
+        if(!doc.chunks.length&&doc.heavy.length)doc.chunks.push({start:0,heavy:doc.heavy.slice(0,16),keywords:doc.keywords.slice(0,8)});
+        if(doc.heavy.length)this.docs.push(doc);
       }catch(_err){}
     }
   }
-  chooseDoc(text,currentChambers,currentPeriodic){
+  prophecyWords(currentMw,currentBpe){
+    const out=new Map();
+    if(!currentMw)return out;
+    for(const [target,strength] of currentMw.prophecies){
+      const word=currentBpe.decode([target]).trim().toLowerCase();
+      if(word.length>2&&/[a-z]/i.test(word))out.set(word,Math.max(out.get(word)||0,strength));
+    }
+    return out;
+  }
+  scoreItem(item,words,dom,currentPeriodic,prophecyWords){
+    let score=0.01*(item.heavy||[]).length;
+    for(const word of (item.keywords||[])){
+      if(words.has(word))score+=1.2;
+      if(word in ANCHORS&&ANCHORS[word]===dom)score+=0.6;
+      if(currentPeriodic){
+        const el=currentPeriodic.classify(word);
+        if(el&&el.ch===dom)score+=0.35*el.mass;
+      }
+      if(prophecyWords.has(word))score+=0.9*prophecyWords.get(word);
+    }
+    score+=Math.random()*0.05;
+    return score;
+  }
+  chooseDoc(text,currentChambers,currentPeriodic,currentMw,currentBpe){
     if(!this.docs.length)return null;
     const words=new Set(extractWords(text||''));
     const dom=currentChambers?currentChambers.dominant():4;
+    const prophecyWords=this.prophecyWords(currentMw,currentBpe);
     let best=this.docs[0],bestScore=-Infinity;
     for(const doc of this.docs){
-      let score=0.01*doc.heavy.length;
-      for(const word of (doc.keywords||[])){
-        if(words.has(word))score+=1.2;
-        if(word in ANCHORS&&ANCHORS[word]===dom)score+=0.6;
-        if(currentPeriodic){
-          const el=currentPeriodic.classify(word);
-          if(el&&el.ch===dom)score+=0.35*el.mass;
-        }
-      }
-      score+=Math.random()*0.05;
+      const score=this.scoreItem(doc,words,dom,currentPeriodic,prophecyWords);
       if(score>bestScore){bestScore=score;best=doc;}
+    }
+    return best;
+  }
+  chooseChunk(doc,text,currentChambers,currentPeriodic,currentMw,currentBpe){
+    if(!doc)return null;
+    const chunks=doc.chunks||[];
+    if(!chunks.length)return doc;
+    const words=new Set(extractWords(text||''));
+    const dom=currentChambers?currentChambers.dominant():4;
+    const prophecyWords=this.prophecyWords(currentMw,currentBpe);
+    let best=chunks[0],bestScore=-Infinity;
+    for(const chunk of chunks){
+      const score=this.scoreItem(chunk,words,dom,currentPeriodic,prophecyWords);
+      if(score>bestScore){bestScore=score;best=chunk;}
     }
     return best;
   }
@@ -1253,15 +1299,16 @@ function generateChain(inputText){
 
   for(let si=0;si<CHAIN;si++){
     let dir=si<nb?-1:si===nb?0:1;
-    const activeDoc=interference&&interference.docs.length?interference.chooseDoc(inputText,chambers,periodic):null;
-    velocity.docSignal=activeDoc?interferenceSignal(activeDoc,V):null;
-    if(activeDoc&&activeDoc.heavy.length){
-      const seedTok=activeDoc.heavy[0];
+    const activeDoc=interference&&interference.docs.length?interference.chooseDoc(inputText,chambers,periodic,mw,bpe):null;
+    const activeChunk=activeDoc?interference.chooseChunk(activeDoc,inputText,chambers,periodic,mw,bpe):null;
+    velocity.docSignal=activeChunk?interferenceSignal(activeChunk,V):null;
+    if(activeChunk&&activeChunk.heavy.length){
+      const seedTok=activeChunk.heavy[0];
       if(seedTok>=0&&seedTok<V)for(let d=0;d<D;d++)gdest[d]=0.97*gdest[d]+0.03*tokEmb[seedTok*D+d];
     }
     let prompt=null,usedInterf=false;
     if(interference&&interference.docs.length&&Math.random()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
-      const seed=activeDoc?interference.injectSeedFromDoc(activeDoc,chambers,bpe,periodic):interference.injectSeed(chambers,bpe,periodic);
+      const seed=activeChunk?interference.injectSeedFromDoc(activeChunk,chambers,bpe,periodic):(activeDoc?interference.injectSeedFromDoc(activeDoc,chambers,bpe,periodic):interference.injectSeed(chambers,bpe,periodic));
       if(seed!==null){prompt=[seed];usedInterf=true;}
     }
     if(!prompt&&inputText){

@@ -132,6 +132,23 @@ class UnifiedContractTests(unittest.TestCase):
         q.prophecy_update(mw, 42)
         self.assertEqual(mw.prophecies, [])
 
+    def test_chunk_selection_prefers_matching_resonance(self):
+        itf = q.Interference()
+        doc = {
+            "name": "dario_essay.txt",
+            "heavy": [1, 2, 3],
+            "keywords": ["resonance", "field"],
+            "chunks": [
+                {"start": 0, "heavy": [11, 12], "keywords": ["fungus", "forest"]},
+                {"start": 32, "heavy": [21, 22], "keywords": ["choir", "resonance"]},
+            ],
+        }
+        ch = q.Chambers()
+        ch.feel("resonance in the choir", None)
+        chunk = itf.choose_chunk(doc, "resonance in the choir", ch, q.PeriodicTable(), None, q.BPE())
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk["start"], 32)
+
 
 if __name__ == "__main__":
     unittest.main()

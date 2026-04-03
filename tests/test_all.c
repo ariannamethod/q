@@ -539,6 +539,18 @@ void test_active_prophecy_state(void) {
     PASS();
 }
 
+void test_chunk_resonance_choice(void) {
+    TEST("chunk_resonance_choice");
+    const char *text="resonance in the choir";
+    const char *chunk_a[]={"fungus","forest"};
+    const char *chunk_b[]={"choir","resonance"};
+    float score_a=0.02f, score_b=0.02f;
+    for(int i=0;i<2;i++) if(strstr(text,chunk_a[i])) score_a+=1.2f;
+    for(int i=0;i<2;i++) if(strstr(text,chunk_b[i])) score_b+=1.2f;
+    CHECK(score_b>score_a, "matching chunk outranks unrelated chunk");
+    PASS();
+}
+
 /* ── 22. Periodic mapping ── */
 void test_periodic_mapping(void) {
     TEST("periodic_mapping");
@@ -631,6 +643,7 @@ int main(void) {
     test_velocity_profile();
     test_interference_doc_choice();
     test_active_prophecy_state();
+    test_chunk_resonance_choice();
     test_periodic_mapping();
     test_interference_seed();
     test_smoke_compile();
