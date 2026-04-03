@@ -1,10 +1,22 @@
 # PostGPT-Q — Resonant Reasoning Engine
 
+> Intelligence is how far ahead you can see and how deeply you can look - without breaking under what that reveals.
+>
+> Jeff Schectman
+
 **θ = ε + γ + αδ**
 
 A 1182-line C inference engine that combines a trained transformer with statistical MetaWeights, a living parliament of LoRA experts, and somatic chambers — producing coherent text from a 2M parameter model that has no right to be coherent.
 
 Q is not a chatbot. Q is an organism that reasons through resonance.
+
+## Interface
+
+![Q HTML Start](assets/q_html_start.png)
+
+![Q HTML Demo](assets/q_html_demo.png)
+
+![Q HTML Field](assets/q_html_field.png)
 
 ## Architecture
 
@@ -199,7 +211,7 @@ Requires: `q.merges` (BPE merge table, binary) and `q.txt` (corpus).
 
 ```bash
 gcc tests/test_all.c -O2 -lm -o test_all && ./test_all    # 40 C tests
-python3 -m unittest tests.test_contract                     # 11 Python contract tests
+python3 -m unittest tests.test_contract                     # 20 Python contract tests
 ```
 
 ## Example Output
