@@ -38,6 +38,8 @@ MAX_PERIODIC = 4096
 QPTQ_MAGIC  = 0x51505451
 QMEM_SOMA   = 0x414D4F53
 QSQL_SCHEMA = 1
+QSPORE_MAGIC = 0x51535052
+QSPORE_VERSION = 1
 def new_experience_log():
     return {"scars": [], "wormholes": [], "prophecies": [], "phases": [], "chunks": []}
 def merge_experience_log(dst, src):
@@ -840,6 +842,72 @@ def save_memory(mw, path, periodic=None, chambers=None):
             mf.write(struct.pack("<6f", *[clampf(v, 0.0, 1.0) for v in chambers.soma]))
             mf.write(struct.pack("<3f", clampf(chambers.presence, 0.0, 1.0), clampf(chambers.debt, 0.0, 1.0), clampf(chambers.trauma, 0.0, 1.0)))
             mf.write(struct.pack("<f", clampf(getattr(chambers, "scar", 0.0), 0.0, 1.0)))
+def save_spore(mw, path, periodic=None, chambers=None):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "wb") as mf:
+        mf.write(struct.pack("<II", QSPORE_MAGIC, QSPORE_VERSION))
+        if chambers is None:
+            mf.write(struct.pack("<6f", *([0.0] * 6)))
+            mf.write(struct.pack("<6f", *([0.0] * 6)))
+            mf.write(struct.pack("<4f", 0.0, 0.0, 0.0, 0.0))
+        else:
+            mf.write(struct.pack("<6f", *[clampf(v, 0.0, 1.0) for v in chambers.act]))
+            mf.write(struct.pack("<6f", *[clampf(v, 0.0, 1.0) for v in chambers.soma]))
+            mf.write(struct.pack("<4f", clampf(chambers.presence, 0.0, 1.0), clampf(chambers.debt, 0.0, 1.0), clampf(chambers.trauma, 0.0, 1.0), clampf(getattr(chambers, "scar", 0.0), 0.0, 1.0)))
+        prophecies = list(mw.prophecies[:16])
+        mf.write(struct.pack("<I", len(prophecies)))
+        for target, strength, age in prophecies:
+            mf.write(struct.pack("<ifi", target, clampf(strength, 0.0, 1.0), int(age)))
+        elems = []
+        if periodic is not None:
+            elems = sorted(periodic.elements.items(), key=lambda item: (-item[1]["mass"], item[0]))[:32]
+        mf.write(struct.pack("<I", len(elems)))
+        for word, elem in elems:
+            wbytes = word.encode("utf-8")[:31]
+            mf.write(struct.pack("B", len(wbytes)))
+            mf.write(wbytes)
+            mf.write(struct.pack("B", elem["ch"]))
+            mf.write(struct.pack("<f", clampf(elem["mass"], 0.0, 1.0)))
+def load_spore(mw, path, periodic=None, chambers=None):
+    try:
+        with open(path, "rb") as mf:
+            magic, version = struct.unpack("<II", mf.read(8))
+            if magic != QSPORE_MAGIC or version != QSPORE_VERSION:
+                return False
+            act_vals = struct.unpack("<6f", mf.read(24))
+            soma_vals = struct.unpack("<6f", mf.read(24))
+            presence, debt, trauma, scar = struct.unpack("<4f", mf.read(16))
+            if chambers is not None:
+                for i in range(N_CHAMBERS):
+                    chambers.act[i] = clampf(max(chambers.act[i], 0.55 * act_vals[i]), 0.0, 1.0)
+                    chambers.soma[i] = clampf(max(chambers.soma[i], 0.60 * soma_vals[i]), 0.0, 1.0)
+                chambers.presence = clampf(max(chambers.presence, 0.70 * presence), 0.0, 1.0)
+                chambers.debt = clampf(max(chambers.debt, 0.55 * debt), 0.0, 1.0)
+                chambers.trauma = clampf(max(chambers.trauma, 0.55 * trauma), 0.0, 1.0)
+                chambers.scar = clampf(max(getattr(chambers, "scar", 0.0), 0.60 * scar), 0.0, 1.0)
+            n_prop = struct.unpack("<I", mf.read(4))[0]
+            for _ in range(min(n_prop, 16)):
+                target, strength, age = struct.unpack("<ifi", mf.read(12))
+                prophecy_add(mw, target, 0.65 * strength)
+                if mw.prophecies:
+                    mw.prophecies[-1][2] = max(mw.prophecies[-1][2], int(age))
+            n_elem = struct.unpack("<I", mf.read(4))[0]
+            if periodic is not None:
+                for _ in range(min(n_elem, 32)):
+                    wlen = struct.unpack("B", mf.read(1))[0]
+                    word = mf.read(wlen).decode("utf-8", errors="replace")
+                    chamber = struct.unpack("B", mf.read(1))[0]
+                    mass = struct.unpack("<f", mf.read(4))[0]
+                    if chamber < 6 and word:
+                        prev = periodic.elements.get(word)
+                        val = {"ch": chamber, "mass": 0.65 * clampf(mass, 0.0, 1.0)}
+                        if prev is None or val["mass"] > prev["mass"]:
+                            periodic.elements[word] = val
+            return True
+    except Exception:
+        return False
 # ── Chambers ──
 class Chambers:
     def __init__(self):
@@ -2241,6 +2309,9 @@ def main():
         print("  [memory loaded: %d bi, %d tri, %d hebb from q.sqlite]" % (mw.n_bi, mw.n_tri, mw.n_hebb))
     elif load_memory(mw, "q.memory", periodic, ch):
         print("  [memory loaded: %d bi, %d tri, %d hebb from q.memory]" % (mw.n_bi, mw.n_tri, mw.n_hebb))
+    spore_path = os.path.join("spores", "q.spore.bin")
+    if load_spore(mw, spore_path, periodic, ch):
+        print(f"  [spore loaded: {spore_path}]")
 
     interference = Interference()
     interference.load_docs("docs", bpe)
@@ -2283,6 +2354,7 @@ def main():
     try:
         save_memory_sqlite(mw, "q.sqlite", periodic, ch, run_events)
         save_memory(mw, "q.memory", periodic, ch)
+        save_spore(mw, spore_path, periodic, ch)
         print("  [memory saved: %d bi, %d tri, %d hebb, %d periodic \u2192 q.sqlite + q.memory]" % (mw.n_bi, mw.n_tri, mw.n_hebb, len(periodic.elements)))
     except Exception:
         pass

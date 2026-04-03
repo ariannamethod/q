@@ -264,6 +264,36 @@ class UnifiedContractTests(unittest.TestCase):
             self.assertGreater(loaded_ch.act[q.CH_FLOW], 0.0)
             self.assertGreater(loaded_ch.act[q.CH_CMPLX], 0.0)
 
+    def test_spore_roundtrip_blends_long_horizon_residue(self):
+        mw = q.MetaW()
+        q.prophecy_add(mw, 42, 0.8)
+        pt = q.PeriodicTable()
+        pt.build_from_text("resonance rhythm paradox mystery tenderness")
+        ch = q.Chambers()
+        ch.act[q.CH_FLOW] = 0.7
+        ch.act[q.CH_CMPLX] = 0.6
+        ch.soma[q.CH_LOVE] = 0.8
+        ch.presence = 0.5
+        ch.debt = 0.4
+        ch.trauma = 0.3
+        ch.scar = 0.2
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "q.spore.bin")
+            q.save_spore(mw, path, pt, ch)
+            loaded_mw = q.MetaW()
+            loaded_pt = q.PeriodicTable()
+            loaded_ch = q.Chambers()
+            self.assertTrue(q.load_spore(loaded_mw, path, loaded_pt, loaded_ch))
+            self.assertGreater(loaded_ch.act[q.CH_FLOW], 0.0)
+            self.assertGreater(loaded_ch.act[q.CH_CMPLX], 0.0)
+            self.assertGreater(loaded_ch.soma[q.CH_LOVE], 0.0)
+            self.assertGreater(loaded_ch.presence, 0.0)
+            self.assertGreater(loaded_ch.debt, 0.0)
+            self.assertGreater(loaded_ch.trauma, 0.0)
+            self.assertGreater(loaded_ch.scar, 0.0)
+            self.assertGreaterEqual(len(loaded_mw.prophecies), 1)
+            self.assertIn("resonance", loaded_pt.elements)
+
 
 if __name__ == "__main__":
     unittest.main()

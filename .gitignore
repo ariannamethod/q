@@ -1,4 +1,5 @@
 *.bin
+!spores/q.spore.bin
 *.safetensors
 *.gguf
 q.memory

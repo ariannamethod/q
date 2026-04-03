@@ -19,6 +19,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <ctype.h>
 #include <unistd.h>
 
@@ -1574,6 +1575,52 @@ static int qsqlite_save(const MetaW *mw, const char *path, const PeriodicTable *
     return ok;
 }
 
+#define QSPORE_MAGIC 0x51535052u
+#define QSPORE_VERSION 1u
+static int qspore_save(const MetaW *mw, const char *path, const PeriodicTable *pt, const Chambers *ch){
+    const char *slash = strrchr(path,'/');
+    if(slash){
+        char dir[256];
+        size_t n=(size_t)(slash-path);
+        if(n>=sizeof(dir)) n=sizeof(dir)-1;
+        memcpy(dir,path,n);
+        dir[n]='\0';
+        mkdir(dir,0755);
+    }
+    FILE *f=fopen(path,"wb"); if(!f) return 0;
+    uint32_t magic=QSPORE_MAGIC, ver=QSPORE_VERSION;
+    fwrite(&magic,4,1,f); fwrite(&ver,4,1,f);
+    fwrite(ch->act,sizeof(float),6,f);
+    fwrite(ch->soma,sizeof(float),6,f);
+    fwrite(&ch->presence,4,1,f); fwrite(&ch->debt,4,1,f); fwrite(&ch->trauma,4,1,f); fwrite(&ch->scar,4,1,f);
+    uint32_t np=(uint32_t)(mw->n_prophecy<16?mw->n_prophecy:16); fwrite(&np,4,1,f);
+    for(uint32_t i=0;i<np;i++){ fwrite(&mw->prophecies[i].target,4,1,f); fwrite(&mw->prophecies[i].strength,4,1,f); fwrite(&mw->prophecies[i].age,4,1,f); }
+    uint32_t ne=(uint32_t)(pt->n<32?pt->n:32); fwrite(&ne,4,1,f);
+    for(uint32_t i=0;i<ne;i++){
+        uint8_t wlen=(uint8_t)strlen(pt->elements[i].word);
+        fwrite(&wlen,1,1,f); fwrite(pt->elements[i].word,1,wlen,f);
+        uint8_t chamber=(uint8_t)pt->elements[i].chamber; fwrite(&chamber,1,1,f); fwrite(&pt->elements[i].mass,4,1,f);
+    }
+    fclose(f); return 1;
+}
+static int qspore_load(MetaW *mw, const char *path, PeriodicTable *pt, Chambers *ch){
+    FILE *f=fopen(path,"rb"); if(!f) return 0;
+    uint32_t magic=0, ver=0; if(fread(&magic,4,1,f)!=1||fread(&ver,4,1,f)!=1||magic!=QSPORE_MAGIC||ver!=QSPORE_VERSION){ fclose(f); return 0; }
+    float act[6]={0}, soma[6]={0}, presence=0,debt=0,trauma=0,scar=0;
+    if(fread(act,sizeof(float),6,f)!=6||fread(soma,sizeof(float),6,f)!=6){ fclose(f); return 0; }
+    fread(&presence,4,1,f); fread(&debt,4,1,f); fread(&trauma,4,1,f); fread(&scar,4,1,f);
+    for(int i=0;i<6;i++){ ch->act[i]=clampf(ch->act[i]>(0.55f*act[i])?ch->act[i]:(0.55f*act[i]),0,1); ch->soma[i]=clampf(ch->soma[i]>(0.60f*soma[i])?ch->soma[i]:(0.60f*soma[i]),0,1); }
+    ch->presence=clampf(ch->presence>(0.70f*presence)?ch->presence:(0.70f*presence),0,1);
+    ch->debt=clampf(ch->debt>(0.55f*debt)?ch->debt:(0.55f*debt),0,1);
+    ch->trauma=clampf(ch->trauma>(0.55f*trauma)?ch->trauma:(0.55f*trauma),0,1);
+    ch->scar=clampf(ch->scar>(0.60f*scar)?ch->scar:(0.60f*scar),0,1);
+    uint32_t np=0; fread(&np,4,1,f);
+    for(uint32_t i=0;i<np&&i<16;i++){ int target=0,age=0; float strength=0; fread(&target,4,1,f); fread(&strength,4,1,f); fread(&age,4,1,f); prophecy_add(mw,target,0.65f*strength); if(mw->n_prophecy>0) mw->prophecies[mw->n_prophecy-1].age = mw->prophecies[mw->n_prophecy-1].age>age?mw->prophecies[mw->n_prophecy-1].age:age; }
+    uint32_t ne=0; fread(&ne,4,1,f);
+    for(uint32_t i=0;i<ne&&i<32;i++){ uint8_t wlen=0,chamber=0; char w[32]={0}; float mass=0; fread(&wlen,1,1,f); if(wlen>31)wlen=31; fread(w,1,wlen,f); fread(&chamber,1,1,f); fread(&mass,4,1,f); if(chamber<6) periodic_add(pt,w,(int)chamber,0.65f*clampf(mass,0,1)); }
+    fclose(f); return 1;
+}
+
 int main(int argc, char **argv){
     printf("PostGPT-Q — Resonant Reasoning Engine (C)\ntheta = epsilon + gamma + alpha*delta\nresonance is unbreakable.\n\n");
     if(argc<3){printf("Usage: %s [weights.bin] corpus.merges corpus.txt\n",argv[0]);return 1;}
@@ -1684,6 +1731,8 @@ int main(int argc, char **argv){
         }
         fclose(mf);
     }}
+    {const char *spore_path="spores/q.spore.bin";
+    if(qspore_load(mw,spore_path,&pt,&ch)) printf("  [spore loaded: %s]\n",spore_path);}
 
     printf("[5] DOE Parliament...\n");
     Parliament parl; parl_init(&parl,t.D,4);
@@ -1728,7 +1777,8 @@ int main(int argc, char **argv){
         fwrite(&ch.debt,4,1,mf);
         fwrite(&ch.trauma,4,1,mf);
         fwrite(&ch.scar,4,1,mf);}
-        fclose(mf);printf("  [memory saved: %d bi, %d tri, %d hebb, %d periodic → q.sqlite + q.memory]\n",mw->n_bi,mw->n_tri,mw->n_hebb,pt.n);
+        {const char *spore_path="spores/q.spore.bin";
+        fclose(mf); qspore_save(mw,spore_path,&pt,&ch); printf("  [memory saved: %d bi, %d tri, %d hebb, %d periodic → q.sqlite + q.memory]\n",mw->n_bi,mw->n_tri,mw->n_hebb,pt.n);}
     }}
     printf("\nresonance is unbreakable.\n");
     free(cids);free(mw);return 0;
