@@ -41,6 +41,13 @@ SPA_HD      = SPA_DIM // SPA_NH
 MAX_EXPERTS = 16
 DOE_RANK    = 4
 DOE_ALPHA   = 0.05
+VEL_WALK    = 0
+VEL_RUN     = 1
+VEL_STOP    = 2
+VEL_BREATHE = 3
+VEL_UP      = 4
+VEL_DOWN    = 5
+VEL_N = ["WALK", "RUN", "STOP", "BREATHE", "UP", "DOWN"]
 
 # ── chamber indices ──
 CH_FEAR  = 0
@@ -653,6 +660,57 @@ def ch_xfire(c, it):
             c.act[i] = clampf(c.act[i], 0.0, 1.0)
             c.soma[i] = clampf(0.94 * c.soma[i] + 0.02 * c.act[i], 0.0, 1.0)
         c.presence = clampf(0.95 * c.presence + 0.03 * c.emergence(), 0.0, 1.0)
+def velocity_profile(ch, dissonance):
+    mode = VEL_WALK
+    if dissonance > 0.8:
+        mode = VEL_UP
+    elif dissonance > 0.6:
+        mode = VEL_RUN
+    elif dissonance < 0.2:
+        mode = VEL_STOP
+    elif ch.trauma > 0.5:
+        mode = VEL_BREATHE
+    elif ch.debt > 0.55:
+        mode = VEL_DOWN
+
+    prof = {
+        "mode": mode,
+        "name": VEL_N[mode],
+        "temp_mul": 1.0,
+        "heb_mul": 1.0,
+        "pro_mul": 1.0,
+        "ds_mul": 1.0,
+        "bg_mul": 1.0,
+        "tg_mul": 1.0,
+        "interf_bonus": 0.0,
+        "wormhole_bonus": 0.0,
+        "debt_decay": 1.0,
+        "trauma_decay": 1.0,
+    }
+    if mode == VEL_RUN:
+        prof["temp_mul"] = 1.12
+        prof["bg_mul"] = 1.15
+        prof["interf_bonus"] = 0.05
+    elif mode == VEL_STOP:
+        prof["temp_mul"] = 0.72
+        prof["ds_mul"] = 1.25
+        prof["debt_decay"] = 0.75
+    elif mode == VEL_BREATHE:
+        prof["temp_mul"] = 0.9
+        prof["debt_decay"] = 0.65
+        prof["trauma_decay"] = 0.75
+    elif mode == VEL_UP:
+        prof["temp_mul"] = 1.22
+        prof["pro_mul"] = 1.25
+        prof["bg_mul"] = 0.9
+        prof["wormhole_bonus"] = 0.05
+        prof["interf_bonus"] = 0.1
+    elif mode == VEL_DOWN:
+        prof["temp_mul"] = 0.82
+        prof["heb_mul"] = 1.1
+        prof["bg_mul"] = 1.1
+        prof["pro_mul"] = 0.9
+    return prof
 class Interference:
     def __init__(self):
         self.docs = []
@@ -1146,7 +1204,7 @@ def starts_with_space(bpe, tid):
         return False
     return b[0] == ord(' ')
 # ── generate sentence ──
-def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr):
+def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr, velocity=None):
     tf_reset(t)
     V = t.V; D = t.D
     destiny = [0.0] * D
@@ -1233,6 +1291,12 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr)
         c_ds  = (0.3 if has_tf else 0.15) * gm
         c_bg  = 5.0 if has_tf else 15.0
         c_tg  = 3.0 if has_tf else 10.0
+        if velocity is not None:
+            c_heb *= velocity["heb_mul"]
+            c_pro *= velocity["pro_mul"]
+            c_ds *= velocity["ds_mul"]
+            c_bg *= velocity["bg_mul"]
+            c_tg *= velocity["tg_mul"]
 
         for i in range(V):
             bg = meta_bi(mw, ctx[cl - 1], i)
@@ -1281,7 +1345,8 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr)
                     mx_val = raw[i]
                     ch_tok = i
         else:
-            ch_tok = sample_nucleus(raw, V, clampf(temp * tm, 0.3, 1.2), 0.85)
+            vel_temp = velocity["temp_mul"] if velocity is not None else 1.0
+            ch_tok = sample_nucleus(raw, V, clampf(temp * tm * vel_temp, 0.25, 1.35), 0.85)
 
         prev_chosen = ch_tok
         out.append(ch_tok); gl += 1
@@ -1404,9 +1469,12 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         ch.feel(input_text, periodic)
         ch.act[CH_FLOW] = clampf(ch.act[CH_FLOW] + 0.1, 0.0, 1.0)
         ch_xfire(ch, 8)
+    vel = velocity_profile(ch, cd)
+    ch.debt = clampf(ch.debt * vel["debt_decay"], 0.0, 1.0)
+    ch.trauma = clampf(ch.trauma * vel["trauma_decay"], 0.0, 1.0)
 
     mode_str = "[TRAINED]" if has_weights else "[METAWEIGHTS ONLY]"
-    print("\n  diss=%.3f debt=%.3f emrg=%.3f %s" % (cd, ch.debt, ch.emergence(), mode_str))
+    print("\n  diss=%.3f debt=%.3f emrg=%.3f vel=%s %s" % (cd, ch.debt, ch.emergence(), vel["name"], mode_str))
     print("  chambers: %s" % ch.summary())
     if parl is not None:
         av = sum(e.vitality for e in parl.ex) / (parl.n if parl.n > 0 else 1)
@@ -1431,7 +1499,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
 
         prompt = None
         used_interference = False
-        if interference is not None and interference.docs and random.random() < 0.3:
+        if interference is not None and interference.docs and random.random() < clampf(0.3 + vel["interf_bonus"], 0.05, 0.5):
             seed = interference.inject_seed(ch, bpe, periodic)
             if seed is not None:
                 prompt = [seed]
@@ -1482,7 +1550,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
                     + 0.1 * math.sin(2 * math.pi * 20.8 * t_sec)
                     + 0.05 * math.sin(2 * math.pi * 27.3 * t_sec))
         base_temp = 0.6 if has_weights else 0.75
-        temp = clampf(base_temp + 0.08 * schumann, 0.4, 0.85)
+        temp = clampf((base_temp + 0.08 * schumann) * vel["temp_mul"], 0.35, 0.95)
 
         # best-of-3
         best_out = []
@@ -1493,7 +1561,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         for cand in range(3):
             if cand > 0 and gdest_save is not None:
                 gdest[:] = list(gdest_save)
-            result = gen_sent(t, bpe, mw, prompt, pl, temp, 256, parl, gdest, ch)
+            result = gen_sent(t, bpe, mw, prompt, pl, temp, 256, parl, gdest, ch, vel)
             sc = coherence_score(mw, result, len(result), t.V)
             if sc > best_sc:
                 best_sc = sc
@@ -1507,13 +1575,14 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             wh_prob = 0.02
             if cd > 0.3:
                 wh_prob += ((cd - 0.3) / 0.7) * 0.15
+            wh_prob = clampf(wh_prob + vel["wormhole_bonus"], 0.0, 0.3)
             wormhole = random.random() < wh_prob
             if wormhole and interference is not None and interference.docs:
                 longest = max(interference.docs, key=lambda d: len(d["heavy"]))
                 if longest["heavy"]:
                     prompt = [random.choice(longest["heavy"])]
                     direction = -direction if direction != 0 else 1
-                    best_out = gen_sent(t, bpe, mw, prompt, len(prompt), 0.55 if has_weights else 0.7, 256, parl, gdest, ch)
+                    best_out = gen_sent(t, bpe, mw, prompt, len(prompt), 0.55 if has_weights else 0.7, 256, parl, gdest, ch, vel)
                     best_ol = len(best_out)
                     best_sc = coherence_score(mw, best_out, best_ol, t.V)
 
@@ -1572,7 +1641,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             nprom = min(3, chain_lens[seed_src])
             prompt = chain_ids[seed_src][chain_lens[seed_src] - nprom:chain_lens[seed_src]]
             reseed_temp = 0.55 if has_weights else 0.7
-            result = gen_sent(t, bpe, mw, prompt, nprom, reseed_temp, 256, parl, gdest, ch)
+            result = gen_sent(t, bpe, mw, prompt, nprom, reseed_temp, 256, parl, gdest, ch, vel)
             new_sc = coherence_score(mw, result, len(result), t.V)
             old_sc = coherence_score(mw, chain_ids[weak_idx], chain_lens[weak_idx], t.V)
             if new_sc > old_sc * 0.7 or len(result) > chain_lens[weak_idx]:  # accept if reasonable

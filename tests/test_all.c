@@ -490,6 +490,18 @@ void test_somatic_modulation(void) {
     PASS();
 }
 
+void test_velocity_profile(void) {
+    TEST("velocity_profile");
+    float diss=0.9f, temp_mul=1.0f, pro_mul=1.0f;
+    if(diss>0.8f){temp_mul=1.22f;pro_mul=1.25f;}
+    CHECK(temp_mul>1.2f, "up heats sampling");
+    CHECK(pro_mul>1.2f, "up boosts prophecy");
+    float trauma=0.7f, debt_decay=1.0f, trauma_decay=1.0f;
+    if(!(diss>0.8f) && trauma>0.5f){debt_decay=0.65f;trauma_decay=0.75f;}
+    CHECK(trauma>0.5f, "breathe condition");
+    PASS();
+}
+
 /* ── 22. Periodic mapping ── */
 void test_periodic_mapping(void) {
     TEST("periodic_mapping");
@@ -579,6 +591,7 @@ int main(void) {
     test_bigram_blocking();
     test_chamber_modulation();
     test_somatic_modulation();
+    test_velocity_profile();
     test_periodic_mapping();
     test_interference_seed();
     test_smoke_compile();

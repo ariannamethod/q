@@ -36,6 +36,8 @@
 #define MAX_PERIODIC 4096
 #define MAX_INTERF_DOCS 32
 #define MAX_HEAVY 32
+enum{VEL_WALK=0,VEL_RUN,VEL_STOP,VEL_BREATHE,VEL_UP,VEL_DOWN};
+static const char *VEL_N[]={"WALK","RUN","STOP","BREATHE","UP","DOWN"};
 
 /* ── math ── */
 static float clampf(float x, float lo, float hi) { return x<lo?lo:x>hi?hi:x; }
@@ -299,6 +301,10 @@ static const SomaticSeed SOMATIC_SEEDS[]={
 typedef struct{char word[32]; int chamber; float mass;}PeriodicElement;
 typedef struct{PeriodicElement elements[MAX_PERIODIC]; int n;}PeriodicTable;
 typedef struct{float act[6];float soma[6];float debt;float trauma;float presence;}Chambers;
+typedef struct{
+    int mode; float temp_mul,heb_mul,pro_mul,ds_mul,bg_mul,tg_mul;
+    float interf_bonus,wormhole_bonus,debt_decay,trauma_decay;
+}VelocityProfile;
 
 static void ch_init(Chambers *c){memset(c,0,sizeof(*c));c->act[CH_LOVE]=0.2f;c->act[CH_FLOW]=0.15f;c->trauma=0;}
 static void ch_xfire(Chambers *c, int it){
@@ -405,6 +411,20 @@ static void ch_summary(const Chambers *c, char *buf, int sz){
     for(int i=0;i<6;i++) if(c->act[i]>0.05f&&pos<sz-1){int w=snprintf(buf+pos,sz-pos,"%s%s:%.0f%%",pos?" ":"",CH_N[i],c->act[i]*100.0f);if(w>0&&pos+w<sz)pos+=w;else break;}
     if(c->presence>0.05f&&pos<sz-1){int w=snprintf(buf+pos,sz-pos,"%sSOMA:%.0f%%",pos?" ":"",c->presence*100.0f);if(w>0&&pos+w<sz)pos+=w;}
     if(pos==0) snprintf(buf,sz,"quiet");
+}
+static VelocityProfile velocity_profile(const Chambers *c, float dissonance){
+    VelocityProfile vp={VEL_WALK,1,1,1,1,1,1,0,0,1,1};
+    if(dissonance>0.8f) vp.mode=VEL_UP;
+    else if(dissonance>0.6f) vp.mode=VEL_RUN;
+    else if(dissonance<0.2f) vp.mode=VEL_STOP;
+    else if(c->trauma>0.5f) vp.mode=VEL_BREATHE;
+    else if(c->debt>0.55f) vp.mode=VEL_DOWN;
+    if(vp.mode==VEL_RUN){vp.temp_mul=1.12f;vp.bg_mul=1.15f;vp.interf_bonus=0.05f;}
+    else if(vp.mode==VEL_STOP){vp.temp_mul=0.72f;vp.ds_mul=1.25f;vp.debt_decay=0.75f;}
+    else if(vp.mode==VEL_BREATHE){vp.temp_mul=0.9f;vp.debt_decay=0.65f;vp.trauma_decay=0.75f;}
+    else if(vp.mode==VEL_UP){vp.temp_mul=1.22f;vp.pro_mul=1.25f;vp.bg_mul=0.9f;vp.interf_bonus=0.1f;vp.wormhole_bonus=0.05f;}
+    else if(vp.mode==VEL_DOWN){vp.temp_mul=0.82f;vp.heb_mul=1.1f;vp.bg_mul=1.1f;vp.pro_mul=0.9f;}
+    return vp;
 }
 
 typedef struct{char name[64]; int heavy[MAX_HEAVY]; int n_heavy;}InterferenceDoc;
@@ -756,7 +776,7 @@ static int starts_with_space(const BPE *bpe, int id){
 static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
                     const int *prompt, int plen, float temp,
                     int *out, int maxo, Parliament *parl, float *global_destiny,
-                    Chambers *ch_ptr){
+                    Chambers *ch_ptr, const VelocityProfile *vel){
     tf_reset(t); int V=t->V,D=t->D;
     float *destiny=calloc(D,sizeof(float));
     /* inherit global destiny direction (thematic coherence across chain) */
@@ -816,6 +836,7 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         /* Dario field: B + α·H + β·P + γ·D + T — stronger without weights */
         float c_heb=(has_tf?0.6f:1.0f)*am, c_pro=(has_tf?0.4f:0.7f)*bm;
         float c_ds=(has_tf?0.3f:0.15f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
+        if(vel){c_heb*=vel->heb_mul;c_pro*=vel->pro_mul;c_ds*=vel->ds_mul;c_bg*=vel->bg_mul;c_tg*=vel->tg_mul;}
         for(int i=0;i<V;i++){
             float bg=meta_bi(mw,ctx[cl-1],i);
             float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
@@ -846,7 +867,7 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
             }else{ch=sample_nucleus(raw,V,0.5f,0.7f);}
         }else if(step<4){
             ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
-        }else{ch=sample_nucleus(raw,V,clampf(temp*tm,0.3f,1.2f),0.85f);}
+        }else{float vm=vel?vel->temp_mul:1.0f;ch=sample_nucleus(raw,V,clampf(temp*tm*vm,0.25f,1.35f),0.85f);}
         free(raw);
         prev_chosen=ch;
         out[gl++]=ch; ctx[cl++]=ch;
@@ -956,10 +977,13 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         ch->act[CH_FLOW]=clampf(ch->act[CH_FLOW]+0.1f,0,1);
         ch_xfire(ch,8);
     }
+    VelocityProfile vel=velocity_profile(ch,cd);
+    ch->debt=clampf(ch->debt*vel.debt_decay,0,1);
+    ch->trauma=clampf(ch->trauma*vel.trauma_decay,0,1);
 
     char chbuf[256];
     ch_summary(ch,chbuf,sizeof(chbuf));
-    printf("\n  diss=%.3f debt=%.3f emrg=%.3f %s\n  chambers: %s",cd,ch->debt,ch_emergence(ch),has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]",chbuf);
+    printf("\n  diss=%.3f debt=%.3f emrg=%.3f vel=%s %s\n  chambers: %s",cd,ch->debt,ch_emergence(ch),VEL_N[vel.mode],has_weights?"[TRAINED]":"[METAWEIGHTS ONLY]",chbuf);
     if(parl) {float av=0;for(int i=0;i<parl->n;i++) av+=parl->ex[i].vitality;av/=(parl->n>0?parl->n:1);
         printf("\n  parliament: %d experts, avg_vitality=%.2f",parl->n,av);}
     if(itf&&itf->n_docs>0) printf("\n  interference: %d docs loaded",itf->n_docs);
@@ -971,7 +995,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
     for(int si=0;si<CHAIN_STEPS;si++){
         int dir=si<nb?-1:(si==nb?0:1);
         int prompt[5]={0},plen=0,used_interf=0;
-        if(itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<0.3f){
+        if(itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<clampf(0.3f+vel.interf_bonus,0.05f,0.5f)){
             int seed=interf_seed(itf,ch,bpe,pt);
             if(seed>=0){prompt[0]=seed;plen=1;used_interf=1;}
         }
@@ -1012,13 +1036,13 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         float schumann=0.4f*sinf(2*M_PI*7.83f*t_sec)+0.2f*sinf(2*M_PI*14.3f*t_sec)
                        +0.1f*sinf(2*M_PI*20.8f*t_sec)+0.05f*sinf(2*M_PI*27.3f*t_sec);
         float base_temp=has_weights?0.6f:0.75f;
-        float temp=clampf(base_temp+0.08f*schumann,0.4f,0.85f);
+        float temp=clampf((base_temp+0.08f*schumann)*vel.temp_mul,0.35f,0.95f);
         /* best-of-3: generate 3 candidates, pick highest coherence */
         int best_out[256],best_ol=0; float best_sc=-1e30f;
         float gdest_save[256]; if(t->D<=256) memcpy(gdest_save,gdest,t->D*sizeof(float));
         for(int cand=0;cand<3;cand++){
             if(cand>0&&t->D<=256) memcpy(gdest,gdest_save,t->D*sizeof(float)); /* restore destiny */
-            int out[256],ol=gen_sent(t,bpe,mw,prompt,plen,temp,out,256,parl,gdest,ch);
+            int out[256],ol=gen_sent(t,bpe,mw,prompt,plen,temp,out,256,parl,gdest,ch,&vel);
             float sc=coherence_score(mw,out,ol,t->V);
             if(sc>best_sc){best_sc=sc;best_ol=ol;memcpy(best_out,out,ol*sizeof(int));}
             if(best_sc>1.0f&&best_ol>12) break; /* early exit if first candidate is strong */
@@ -1027,6 +1051,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         if(si<CHAIN_STEPS-1){
             float wh_prob=0.02f;
             if(cd>0.3f) wh_prob+=((cd-0.3f)/0.7f)*0.15f;
+            wh_prob=clampf(wh_prob+vel.wormhole_bonus,0,0.3f);
             wormhole=((float)rand()/RAND_MAX)<wh_prob;
             if(wormhole&&itf&&itf->n_docs>0){
                 const InterferenceDoc *doc=&itf->docs[0];
@@ -1034,7 +1059,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
                 if(doc->n_heavy>0){
                     int wh_prompt[1]={doc->heavy[rand()%doc->n_heavy]};
                     dir=dir!=0?-dir:1;
-                    best_ol=gen_sent(t,bpe,mw,wh_prompt,1,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch);
+                    best_ol=gen_sent(t,bpe,mw,wh_prompt,1,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch,&vel);
                     best_sc=coherence_score(mw,best_out,best_ol,t->V);
                 }
             }
@@ -1073,7 +1098,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
             int seed_src=weak_idx>0?weak_idx-1:(weak_idx<CHAIN_STEPS-1?weak_idx+1:0);
             int nprom=chain_lens[seed_src]>3?3:chain_lens[seed_src];
             int prompt[5]; for(int i=0;i<nprom;i++) prompt[i]=chain_ids[seed_src][chain_lens[seed_src]-nprom+i];
-            int out[256],ol=gen_sent(t,bpe,mw,prompt,nprom,has_weights?0.55f:0.7f,out,256,parl,gdest,ch);
+            int out[256],ol=gen_sent(t,bpe,mw,prompt,nprom,has_weights?0.55f:0.7f,out,256,parl,gdest,ch,&vel);
             float new_sc=coherence_score(mw,out,ol,t->V);
             float old_sc=coherence_score(mw,chain_ids[weak_idx],chain_lens[weak_idx],t->V);
             if(new_sc>old_sc*0.7f||ol>chain_lens[weak_idx]){ /* accept if reasonable */

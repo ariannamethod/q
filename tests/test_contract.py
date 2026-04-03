@@ -91,6 +91,19 @@ class UnifiedContractTests(unittest.TestCase):
             self.assertEqual(loaded_ch.presence, 0.0)
             self.assertTrue(all(v == 0.0 for v in loaded_ch.soma))
 
+    def test_velocity_profile_prefers_dissonance_then_recovery(self):
+        ch = q.Chambers()
+        up = q.velocity_profile(ch, 0.9)
+        self.assertEqual(up["name"], "UP")
+        self.assertGreater(up["pro_mul"], 1.0)
+
+        ch2 = q.Chambers()
+        ch2.trauma = 0.7
+        breathe = q.velocity_profile(ch2, 0.4)
+        self.assertEqual(breathe["name"], "BREATHE")
+        self.assertLess(breathe["debt_decay"], 1.0)
+        self.assertLess(breathe["trauma_decay"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

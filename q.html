@@ -199,6 +199,7 @@ body {
 
 const CHAIN=12, TOP_K=15, MAX_EXPERTS=16, DOE_RANK=4, DOE_ALPHA=0.05, MAX_VOCAB=1280;
 const QPTQ_MAGIC=0x51505451;
+const VEL_NAMES=['WALK','RUN','STOP','BREATHE','UP','DOWN'];
 const CH_NAMES=['FEAR','LOVE','RAGE','VOID','FLOW','CMPLX'];
 const CH_DECAY=[0.90,0.93,0.85,0.97,0.88,0.94];
 const COUPLING=[[0,-0.3,0.5,0.4,-0.2,0.1],[-0.3,0,-0.4,-0.5,0.5,0.2],[0.5,-0.3,0,0.2,-0.3,0.3],[0.4,-0.5,0.3,0,-0.3,0.4],[-0.2,0.4,-0.2,-0.3,0,0.3],[0.1,0.2,0.3,0.4,0.3,0]];
@@ -680,6 +681,22 @@ class Chambers {
   }
 }
 
+function velocityProfile(currentChambers,dissonance){
+  let mode=0;
+  if(dissonance>0.8)mode=4;
+  else if(dissonance>0.6)mode=1;
+  else if(dissonance<0.2)mode=2;
+  else if(currentChambers.trauma>0.5)mode=3;
+  else if(currentChambers.debt>0.55)mode=5;
+  const prof={mode,name:VEL_NAMES[mode],tempMul:1,hebMul:1,proMul:1,dsMul:1,bgMul:1,tgMul:1,interfBonus:0,wormholeBonus:0,debtDecay:1,traumaDecay:1};
+  if(mode===1){prof.tempMul=1.12;prof.bgMul=1.15;prof.interfBonus=0.05;}
+  else if(mode===2){prof.tempMul=0.72;prof.dsMul=1.25;prof.debtDecay=0.75;}
+  else if(mode===3){prof.tempMul=0.9;prof.debtDecay=0.65;prof.traumaDecay=0.75;}
+  else if(mode===4){prof.tempMul=1.22;prof.proMul=1.25;prof.bgMul=0.9;prof.interfBonus=0.1;prof.wormholeBonus=0.05;}
+  else if(mode===5){prof.tempMul=0.82;prof.hebMul=1.1;prof.bgMul=1.1;prof.proMul=0.9;}
+  return prof;
+}
+
 class Interference {
   constructor(){this.docs=[];}
   async loadDocs(currentBpe){
@@ -912,7 +929,7 @@ function coherenceScore(ids){
 let _zeroTokCache=null;
 function _zeroTok(V,D){if(!_zeroTokCache||_zeroTokCache.length!==V*D)_zeroTokCache=new Float32Array(V*D);return _zeroTokCache;}
 
-function genSentence(prompt,temp,gdest){
+function genSentence(prompt,temp,gdest,velocity){
   const V=tf&&tf.loaded?tf.V:bpe.vocabSize;
   const D=tf&&tf.loaded?tf.D:48;
   if(tf&&tf.loaded)tf.reset();
@@ -980,7 +997,14 @@ function genSentence(prompt,temp,gdest){
     // detect transformer activity
     let tmag=0;for(let i=0;i<V;i++)tmag+=Math.abs(raw[i]);tmag/=V;
     const hasTf=tmag>0.1;
-    const cHeb=(hasTf?0.6:1.0)*mod.a,cPro=(hasTf?0.4:0.7)*mod.b,cDs=(hasTf?0.3:0.15)*mod.g,cBg=hasTf?5:15,cTg=hasTf?3:10;
+    let cHeb=(hasTf?0.6:1.0)*mod.a,cPro=(hasTf?0.4:0.7)*mod.b,cDs=(hasTf?0.3:0.15)*mod.g,cBg=hasTf?5:15,cTg=hasTf?3:10;
+    if(velocity){
+      cHeb*=velocity.hebMul;
+      cPro*=velocity.proMul;
+      cDs*=velocity.dsMul;
+      cBg*=velocity.bgMul;
+      cTg*=velocity.tgMul;
+    }
 
     for(let i=0;i<V;i++){
       const bg=mw.queryBi(ctx[ctx.length-1],i);
@@ -1012,7 +1036,10 @@ function genSentence(prompt,temp,gdest){
       else ch=sampleNucleus(raw,V,0.5,0.7);
     }else if(step<4){
       ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}
-    }else ch=sampleNucleus(raw,V,Math.max(0.3,Math.min(1.2,temp*mod.t)),0.85);
+    }else{
+      const velTemp=velocity?velocity.tempMul:1;
+      ch=sampleNucleus(raw,V,Math.max(0.25,Math.min(1.35,temp*mod.t*velTemp)),0.85);
+    }
 
     prevChosen=ch;
     out.push(ch);ctx.push(ch);
@@ -1108,9 +1135,12 @@ function generateChain(inputText){
     chambers.act[4]=Math.min(1,chambers.act[4]+0.1);
     chambers.crossfire(8);
   }
+  const velocity=velocityProfile(chambers,cd);
+  chambers.debt=Math.max(0,Math.min(1,chambers.debt*velocity.debtDecay));
+  chambers.trauma=Math.max(0,Math.min(1,chambers.trauma*velocity.traumaDecay));
 
   const modeStr=tf&&tf.loaded?'TRAINED':'METAWEIGHTS ONLY';
-  log(`diss=${cd.toFixed(3)} debt=${chambers.debt.toFixed(3)} emrg=${chambers.emergence().toFixed(3)} [${modeStr}]`);
+  log(`diss=${cd.toFixed(3)} debt=${chambers.debt.toFixed(3)} emrg=${chambers.emergence().toFixed(3)} vel=${velocity.name} [${modeStr}]`);
   log(`chambers: ${chambers.summary()}`,'sys');
   if(interference&&interference.docs.length)log(`interference: ${interference.docs.length} docs loaded`,'sys');
   updateStats();
@@ -1125,7 +1155,7 @@ function generateChain(inputText){
   for(let si=0;si<CHAIN;si++){
     let dir=si<nb?-1:si===nb?0:1;
     let prompt=null,usedInterf=false;
-    if(interference&&interference.docs.length&&Math.random()<0.3){
+    if(interference&&interference.docs.length&&Math.random()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
       const seed=interference.injectSeed(chambers,bpe,periodic);
       if(seed!==null){prompt=[seed];usedInterf=true;}
     }
@@ -1169,14 +1199,14 @@ function generateChain(inputText){
     const tSec=si/CHAIN;
     const schumann=0.4*Math.sin(2*Math.PI*7.83*tSec)+0.2*Math.sin(2*Math.PI*14.3*tSec)+0.1*Math.sin(2*Math.PI*20.8*tSec)+0.05*Math.sin(2*Math.PI*27.3*tSec);
     const baseTemp=tf&&tf.loaded?0.6:0.75;
-    const temp=Math.max(0.4,Math.min(0.85,baseTemp+0.08*schumann));
+    const temp=Math.max(0.35,Math.min(0.95,(baseTemp+0.08*schumann)*velocity.tempMul));
 
     // best of 3
     let bestOut=null,bestSc=-Infinity;
     const gdestSave=new Float32Array(gdest);
     for(let cand=0;cand<3;cand++){
       if(cand>0)gdest.set(gdestSave);
-      const o=genSentence(prompt,temp,gdest);
+      const o=genSentence(prompt,temp,gdest,velocity);
       const sc=coherenceScore(o);
       if(sc>bestSc){bestSc=sc;bestOut=o;}
       if(bestSc>1&&bestOut.length>12)break;
@@ -1186,13 +1216,14 @@ function generateChain(inputText){
     if(si<CHAIN-1){
       let whProb=0.02;
       if(cd>0.3)whProb+=((cd-0.3)/0.7)*0.15;
+      whProb=Math.max(0,Math.min(0.3,whProb+velocity.wormholeBonus));
       wormhole=Math.random()<whProb;
       if(wormhole&&interference&&interference.docs.length){
         const farthest=[...interference.docs].sort((a,b)=>b.heavy.length-a.heavy.length)[0];
         if(farthest&&farthest.heavy.length){
           dir=dir!==0?-dir:1;
           const whPrompt=[farthest.heavy[Math.floor(Math.random()*farthest.heavy.length)]];
-          bestOut=genSentence(whPrompt,tf&&tf.loaded?0.55:0.7,gdest);
+          bestOut=genSentence(whPrompt,tf&&tf.loaded?0.55:0.7,gdest,velocity);
           bestSc=coherenceScore(bestOut);
         }
       }
@@ -1225,7 +1256,7 @@ function generateChain(inputText){
       const nprom=Math.min(3,chainIds[seedSrc].length);
       const rPrompt=chainIds[seedSrc].slice(chainIds[seedSrc].length-nprom);
       const rTemp=tf&&tf.loaded?0.55:0.7;
-      const rOut=genSentence(rPrompt,rTemp,gdest);
+      const rOut=genSentence(rPrompt,rTemp,gdest,velocity);
       const newSc=coherenceScore(rOut);
       const oldSc=coherenceScore(chainIds[weakIdx]);
       if(newSc>oldSc*0.7||rOut.length>chainIds[weakIdx].length){ // accept if reasonable
