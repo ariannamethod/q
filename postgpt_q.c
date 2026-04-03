@@ -28,6 +28,7 @@
 #define MAX_BIGRAM   65536
 #define MAX_TRIGRAM  65536
 #define MAX_HEBBIAN  131072
+#define MAX_PROPHECY 32
 #define N_CHAMBERS   6
 #define CHAIN_STEPS  12
 #define TOP_K        15
@@ -128,11 +129,13 @@ static int bpe_decode_token(const BPE *bpe, int id, char *buf, int sz){
 typedef struct{int a,b;float prob;}BigramE;
 typedef struct{int a,b,c;float prob;}TrigramE;
 typedef struct{int a,b;float str;}HebbE;
+typedef struct{int target;float strength;int age;}ProphecyE;
 typedef struct{
     float unigram[MAX_VOCAB];
     BigramE bigrams[MAX_BIGRAM]; int n_bi;
     TrigramE trigrams[MAX_TRIGRAM]; int n_tri;
     HebbE hebbs[MAX_HEBBIAN]; int n_hebb;
+    ProphecyE prophecies[MAX_PROPHECY]; int n_prophecy;
 }MetaW;
 
 static void meta_build(MetaW *mw, const int *ids, int n, int V){
@@ -228,8 +231,37 @@ static void meta_prophecy(const MetaW *mw, const int *ctx, int cl, float *out, i
             }
         }
     }
+    for(int i=0;i<mw->n_prophecy;i++){
+        int target=mw->prophecies[i].target;
+        if(target>=0&&target<V&&!appeared[target%256])
+            out[target]+=mw->prophecies[i].strength*logf(1.0f+(float)mw->prophecies[i].age);
+    }
     float mx=0; for(int i=0;i<V;i++) if(out[i]>mx) mx=out[i];
     if(mx>0) for(int i=0;i<V;i++) out[i]/=mx;
+}
+static void prophecy_add(MetaW *mw, int target, float strength){
+    if(target<0) return;
+    for(int i=0;i<mw->n_prophecy;i++) if(mw->prophecies[i].target==target){
+        if(strength>mw->prophecies[i].strength) mw->prophecies[i].strength=strength;
+        mw->prophecies[i].age=0; return;
+    }
+    if(mw->n_prophecy>=MAX_PROPHECY){
+        int oldest=0;
+        for(int i=1;i<mw->n_prophecy;i++) if(mw->prophecies[i].age>mw->prophecies[oldest].age) oldest=i;
+        mw->prophecies[oldest]=mw->prophecies[--mw->n_prophecy];
+    }
+    mw->prophecies[mw->n_prophecy++] = (ProphecyE){target,strength,0};
+}
+static void prophecy_update(MetaW *mw, int token){
+    int w=0;
+    for(int i=0;i<mw->n_prophecy;i++){
+        ProphecyE p=mw->prophecies[i];
+        if(p.target==token) continue;
+        p.age++;
+        p.strength*=0.995f;
+        if(p.age<50&&p.strength>0.01f) mw->prophecies[w++]=p;
+    }
+    mw->n_prophecy=w;
 }
 
 static void ingest_ids(MetaW *mw, const int *ids, int n, float amount){
@@ -921,6 +953,7 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         free(raw);
         prev_chosen=ch;
         out[gl++]=ch; ctx[cl++]=ch;
+        prophecy_update(mw,ch);
         /* word capture: online MetaWeight update (NOTORCH) */
         if(cl>=2){
             int prev=ctx[cl-2],cur=ctx[cl-1];
@@ -930,6 +963,10 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
             }
             if(mw->n_bi<MAX_BIGRAM){mw->bigrams[mw->n_bi].a=prev;mw->bigrams[mw->n_bi].b=cur;mw->bigrams[mw->n_bi].prob=0.01f;mw->n_bi++;}
             bi_done:;
+            {int best_pred=-1; float best_prob=0;
+            for(int i=0;i<mw->n_tri;i++) if(mw->trigrams[i].a==prev&&mw->trigrams[i].b==cur&&mw->trigrams[i].prob>best_prob){best_prob=mw->trigrams[i].prob;best_pred=mw->trigrams[i].c;}
+            if(best_pred<0) for(int i=0;i<mw->n_bi;i++) if(mw->bigrams[i].a==cur&&mw->bigrams[i].prob>best_prob){best_prob=mw->bigrams[i].prob;best_pred=mw->bigrams[i].b;}
+            if(best_pred>=0) prophecy_add(mw,best_pred,0.2f+0.5f*best_prob);}
             /* update Hebbian: co-occurrence with recent window */
             int hw=cl>6?cl-6:0;
             for(int ri=hw;ri<cl-1;ri++){

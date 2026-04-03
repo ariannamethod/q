@@ -352,8 +352,10 @@ class BPE {
 // ═══════════════════════════════════════════════════════════════
 // 2. MetaWeights
 // ═══════════════════════════════════════════════════════════════
+const MAX_PROPHECY=32;
+
 class MetaWeights {
-  constructor(){this.bi=new Map();this.tri=new Map();this.unigram=null;this.hebb=new Map();this.bigramCount=0;}
+  constructor(){this.bi=new Map();this.tri=new Map();this.unigram=null;this.hebb=new Map();this.prophecies=[];this.bigramCount=0;}
 
   build(ids,V){
     this.unigram=new Float32Array(V);
@@ -422,9 +424,39 @@ class MetaWeights {
         if(a===p0&&b===p1&&c2<V&&!appeared.has(c2))out[c2]+=p*1.5; // trigrams more specific
       }
     }
+    for(const [target,strength,age] of this.prophecies){
+      if(target>=0&&target<V&&!appeared.has(target))out[target]+=strength*Math.log1p(age);
+    }
     let mx=0;for(let i=0;i<V;i++)if(out[i]>mx)mx=out[i];
     if(mx>0)for(let i=0;i<V;i++)out[i]/=mx;
     return out;
+  }
+
+  prophecyAdd(target,strength){
+    for(const item of this.prophecies){
+      if(item[0]===target){
+        item[1]=Math.max(item[1],strength);
+        item[2]=0;
+        return;
+      }
+    }
+    if(this.prophecies.length>=MAX_PROPHECY){
+      let oldest=0;
+      for(let i=1;i<this.prophecies.length;i++)if(this.prophecies[i][2]>this.prophecies[oldest][2])oldest=i;
+      this.prophecies.splice(oldest,1);
+    }
+    this.prophecies.push([target,strength,0]);
+  }
+
+  prophecyUpdate(token){
+    const kept=[];
+    for(const item of this.prophecies){
+      if(item[0]===token)continue;
+      const nextAge=item[2]+1;
+      const nextStrength=item[1]*0.995;
+      if(nextAge<50&&nextStrength>0.01)kept.push([item[0],nextStrength,nextAge]);
+    }
+    this.prophecies=kept;
   }
 
   captureOnline(prev,cur){
@@ -1094,6 +1126,7 @@ function genSentence(prompt,temp,gdest,velocity){
 
     prevChosen=ch;
     out.push(ch);ctx.push(ch);
+    mw.prophecyUpdate(ch);
     // word capture: bigram + Hebbian (matches C online capture)
     if(ctx.length>=2){
       mw.captureOnline(ctx[ctx.length-2],ch);
@@ -1105,6 +1138,21 @@ function genSentence(prompt,temp,gdest,velocity){
         const k=a*65536+b;
         mw.hebb.set(k,(mw.hebb.get(k)||0)+decay*0.005);
       }
+      const prev=ctx[ctx.length-2],cur=ch;
+      let bestPred=-1,bestProb=0;
+      for(const [k,p] of mw.tri){
+        const parts=k.split(',');
+        if(parts.length!==3)continue;
+        const a=Number(parts[0]),b=Number(parts[1]),c2=Number(parts[2]);
+        if(a===prev&&b===cur&&p>bestProb){bestProb=p;bestPred=c2;}
+      }
+      if(bestPred<0){
+        for(const [k,p] of mw.bi){
+          const a=k>>>16,b=k&0xffff;
+          if(a===cur&&p>bestProb){bestProb=p;bestPred=b;}
+        }
+      }
+      if(bestPred>=0)mw.prophecyAdd(bestPred,0.2+0.5*bestProb);
     }
     if(bpe.isBoundary(ch)&&step>8)break;
   }

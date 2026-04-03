@@ -514,6 +514,31 @@ void test_interference_doc_choice(void) {
     PASS();
 }
 
+void test_active_prophecy_state(void) {
+    TEST("active_prophecy_state");
+    typedef struct{int target; float strength; int age;} ProphecyE;
+    ProphecyE ps[4]={{42,0.7f,0}}; int np=1;
+    for(int i=0;i<np;i++){
+        if(ps[i].target!=7){
+            ps[i].age+=1;
+            ps[i].strength*=0.995f;
+        }
+    }
+    CHECK(np==1, "still present after unrelated token");
+    CHECK(ps[0].target==42, "target preserved");
+    CHECK(ps[0].age==1, "age incremented");
+    CHECK(ps[0].strength<0.7f, "strength decayed");
+
+    int kept=0;
+    for(int i=0;i<np;i++){
+        if(ps[i].target==42) continue;
+        ps[kept++]=ps[i];
+    }
+    np=kept;
+    CHECK(np==0, "fulfilled prophecy removed");
+    PASS();
+}
+
 /* ── 22. Periodic mapping ── */
 void test_periodic_mapping(void) {
     TEST("periodic_mapping");
@@ -605,6 +630,7 @@ int main(void) {
     test_somatic_modulation();
     test_velocity_profile();
     test_interference_doc_choice();
+    test_active_prophecy_state();
     test_periodic_mapping();
     test_interference_seed();
     test_smoke_compile();

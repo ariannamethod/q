@@ -116,6 +116,22 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertIsNotNone(doc)
         self.assertEqual(doc["name"], "a.txt")
 
+    def test_active_prophecy_ages_and_fulfills(self):
+        mw = q.MetaW()
+        q.prophecy_add(mw, 42, 0.7)
+        self.assertEqual(len(mw.prophecies), 1)
+        self.assertEqual(mw.prophecies[0][0], 42)
+        self.assertEqual(mw.prophecies[0][2], 0)
+
+        q.prophecy_update(mw, 7)
+        self.assertEqual(len(mw.prophecies), 1)
+        self.assertEqual(mw.prophecies[0][0], 42)
+        self.assertEqual(mw.prophecies[0][2], 1)
+        self.assertLess(mw.prophecies[0][1], 0.7)
+
+        q.prophecy_update(mw, 42)
+        self.assertEqual(mw.prophecies, [])
+
 
 if __name__ == "__main__":
     unittest.main()

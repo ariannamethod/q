@@ -29,6 +29,7 @@ MAX_SEQ     = 4096
 MAX_BIGRAM  = 65536
 MAX_TRIGRAM = 65536
 MAX_HEBBIAN = 131072
+MAX_PROPHECY = 32
 N_CHAMBERS  = 6
 CHAIN_STEPS = 12
 TOP_K       = 15
@@ -245,6 +246,7 @@ class MetaW:
         self.n_tri = 0
         self.hebbs = []       # list of [a, b, str]
         self.n_hebb = 0
+        self.prophecies = []  # list of [target, strength, age]
 class PeriodicTable:
     def __init__(self):
         self.elements = {}
@@ -419,6 +421,9 @@ def meta_prophecy(mw, ctx, cl, V):
             if (mw.trigrams[k][0] == p0 and mw.trigrams[k][1] == p1
                     and mw.trigrams[k][2] < V and not appeared[mw.trigrams[k][2] % 256]):
                 out[mw.trigrams[k][2]] += mw.trigrams[k][3] * 1.5  # trigrams are more specific
+    for target, strength, age in mw.prophecies:
+        if 0 <= target < V and not appeared[target % 256]:
+            out[target] += strength * math.log1p(float(age))
     mx = 0.0
     for i in range(V):
         if out[i] > mx:
@@ -427,6 +432,28 @@ def meta_prophecy(mw, ctx, cl, V):
         for i in range(V):
             out[i] /= mx
     return out
+def prophecy_add(mw, target, strength):
+    if target < 0:
+        return
+    for item in mw.prophecies:
+        if item[0] == target:
+            item[1] = max(item[1], strength)
+            item[2] = 0
+            return
+    if len(mw.prophecies) >= MAX_PROPHECY:
+        oldest = max(range(len(mw.prophecies)), key=lambda i: mw.prophecies[i][2])
+        mw.prophecies.pop(oldest)
+    mw.prophecies.append([target, strength, 0])
+def prophecy_update(mw, token):
+    kept = []
+    for target, strength, age in mw.prophecies:
+        if target == token:
+            continue
+        age += 1
+        strength *= 0.995
+        if age < 50 and strength > 0.01:
+            kept.append([target, strength, age])
+    mw.prophecies = kept
 def ingest_ids(mw, ids, amount=0.02):
     ulen = len(ids)
     if ulen <= 1:
@@ -1394,6 +1421,7 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
         prev_chosen = ch_tok
         out.append(ch_tok); gl += 1
         ctx[cl] = ch_tok; cl += 1
+        prophecy_update(mw, ch_tok)
 
         # word capture
         if cl >= 2:
@@ -1408,6 +1436,19 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
             if not found and mw.n_bi < MAX_BIGRAM:
                 mw.bigrams.append([prev_tok, cur, 0.01])
                 mw.n_bi += 1
+            best_pred = -1
+            best_prob = 0.0
+            for i in range(mw.n_tri):
+                if mw.trigrams[i][0] == prev_tok and mw.trigrams[i][1] == cur and mw.trigrams[i][3] > best_prob:
+                    best_prob = mw.trigrams[i][3]
+                    best_pred = mw.trigrams[i][2]
+            if best_pred < 0:
+                for i in range(mw.n_bi):
+                    if mw.bigrams[i][0] == cur and mw.bigrams[i][2] > best_prob:
+                        best_prob = mw.bigrams[i][2]
+                        best_pred = mw.bigrams[i][1]
+            if best_pred >= 0:
+                prophecy_add(mw, best_pred, 0.2 + 0.5 * best_prob)
 
             hw = max(0, cl - 6)
             for ri in range(hw, cl - 1):
