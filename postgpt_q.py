@@ -2011,6 +2011,8 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
     tf_reset(t)
     V = t.V; D = t.D
     destiny = [0.0] * D
+    prompt_anchor = [0.0] * D
+    prompt_anchor_norm = 0.0
     if global_destiny is not None:
         for d in range(D):
             destiny[d] = 0.3 * global_destiny[d]
@@ -2024,6 +2026,14 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
         tf_forward(t, prompt[i], i)
         ctx[cl] = prompt[i]; cl += 1
         out.append(prompt[i]); gl += 1
+        if 0 <= prompt[i] < t.V:
+            for d in range(D):
+                prompt_anchor[d] += t.tok[prompt[i] * D + d]
+    if plen > 0:
+        inv = 1.0 / float(plen)
+        for d in range(D):
+            prompt_anchor[d] *= inv
+        prompt_anchor_norm = math.sqrt(sum(v * v for v in prompt_anchor) + 1e-10)
 
     am, bm, gm, tm = (1.0, 1.0, 1.0, 1.0)
     if ch_ptr is not None:
@@ -2123,6 +2133,9 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
         c_bg *= focus
         c_tg *= focus
         c_doc *= focus
+        c_prompt = 0.0
+        if has_tf and prompt_anchor_norm > 1e-8 and step < 6:
+            c_prompt = (0.14 if step < 2 else 0.09) * focus
 
         for i in range(V):
             bg = meta_bi(mw, ctx[cl - 1], i)
@@ -2136,6 +2149,11 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
             raw[i] += c_heb * heb[i] + c_pro * pro[i] + c_ds * ds + c_bg * bg + c_tg * tg_val
             if doc_signal is not None:
                 raw[i] += c_doc * doc_signal[i]
+            if c_prompt > 0.0:
+                en = math.sqrt(sum(t.tok[i * D + d] * t.tok[i * D + d] for d in range(D)) + 1e-10)
+                if en > 1e-8:
+                    dot = sum(prompt_anchor[d] * t.tok[i * D + d] for d in range(D))
+                    raw[i] += c_prompt * (dot / (prompt_anchor_norm * en))
             if mw.unigram[i] < 1e-6:
                 raw[i] -= 2.0
             elif mw.unigram[i] > 0.01:
@@ -2169,13 +2187,16 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
                         ch_tok = i
             else:
                 ch_tok = sample_nucleus(raw, V, 0.35, 0.55)
-        elif step < 4:
+        elif step < 2:
             ch_tok = 0
             mx_val = raw[0]
             for i in range(1, V):
                 if raw[i] > mx_val:
                     mx_val = raw[i]
                     ch_tok = i
+        elif step < 5:
+            vel_temp = velocity["temp_mul"] if velocity is not None else 1.0
+            ch_tok = sample_nucleus(raw, V, clampf(temp * tm * vel_temp * 0.72, 0.22, 0.55), 0.60)
         else:
             vel_temp = velocity["temp_mul"] if velocity is not None else 1.0
             ch_tok = sample_nucleus(raw, V, clampf(temp * tm * vel_temp, 0.25, 1.35), 0.85)

@@ -1279,6 +1279,8 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
                     Chambers *ch_ptr, const VelocityProfile *vel, const float *doc_signal){
     tf_reset(t); int V=t->V,D=t->D;
     float *destiny=calloc(D,sizeof(float));
+    float *prompt_anchor=calloc(D,sizeof(float));
+    float prompt_anchor_norm=0.0f;
     /* inherit global destiny direction (thematic coherence across chain) */
     if(global_destiny) for(int d=0;d<D;d++) destiny[d]=0.3f*global_destiny[d];
     float *prev_logits=calloc(V,sizeof(float));
@@ -1286,7 +1288,15 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
     int ctx[MAX_SEQ],cl=0,gl=0;
     float am=1.0f,bm=1.0f,gm=1.0f,tm=1.0f;
     if(ch_ptr) ch_modulate(ch_ptr,&am,&bm,&gm,&tm);
-    for(int i=0;i<plen&&i<t->CTX-1;i++){tf_forward(t,prompt[i],i);ctx[cl++]=prompt[i];out[gl++]=prompt[i];}
+    for(int i=0;i<plen&&i<t->CTX-1;i++){tf_forward(t,prompt[i],i);ctx[cl++]=prompt[i];out[gl++]=prompt[i];
+        if(prompt[i]>=0&&prompt[i]<t->V) for(int d=0;d<D;d++) prompt_anchor[d]+=t->tok[prompt[i]*D+d];
+    }
+    if(plen>0){
+        float inv=1.0f/(float)plen;
+        for(int d=0;d<D;d++) prompt_anchor[d]*=inv;
+        for(int d=0;d<D;d++) prompt_anchor_norm+=prompt_anchor[d]*prompt_anchor[d];
+        prompt_anchor_norm=sqrtf(prompt_anchor_norm+1e-10f);
+    }
     for(int step=0;step<120&&gl<maxo;step++){
         int pos=cl-1; if(pos>=t->CTX-1) break;
         tf_forward(t,ctx[cl-1],pos);
@@ -1359,17 +1369,27 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
             c_bg*=focus;
             c_tg*=focus;
             c_doc*=focus;
-        }
-        for(int i=0;i<V;i++){
-            float bg=meta_bi(mw,ctx[cl-1],i);
-            float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
-            float ds=0;
-            if(dn>1e-8f){float en=0;for(int d=0;d<D;d++) en+=t->tok[i*D+d]*t->tok[i*D+d];
-                en=sqrtf(en+1e-10f);if(en>1e-8f){float dot=0;for(int d=0;d<D;d++) dot+=destiny[d]*t->tok[i*D+d];ds=dot/(dn*en);}}
-            raw[i]+=c_heb*heb[i]+c_pro*pro[i]+c_ds*ds+c_bg*bg+c_tg*tg;
-            if(doc_signal) raw[i]+=c_doc*doc_signal[i];
-            if(mw->unigram[i]<1e-6f) raw[i]-=2.0f;
-            else if(mw->unigram[i]>0.01f) raw[i]-=0.3f*(mw->unigram[i]-0.01f)*100.0f;
+            float c_prompt=0.0f;
+            if(has_tf&&prompt_anchor_norm>1e-8f&&step<6) c_prompt=(step<2?0.14f:0.09f)*focus;
+            for(int i=0;i<V;i++){
+                float bg=meta_bi(mw,ctx[cl-1],i);
+                float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
+                float ds=0;
+                if(dn>1e-8f){float en=0;for(int d=0;d<D;d++) en+=t->tok[i*D+d]*t->tok[i*D+d];
+                    en=sqrtf(en+1e-10f);if(en>1e-8f){float dot=0;for(int d=0;d<D;d++) dot+=destiny[d]*t->tok[i*D+d];ds=dot/(dn*en);}}
+                raw[i]+=c_heb*heb[i]+c_pro*pro[i]+c_ds*ds+c_bg*bg+c_tg*tg;
+                if(doc_signal) raw[i]+=c_doc*doc_signal[i];
+                if(c_prompt>0.0f){
+                    float en=0; for(int d=0;d<D;d++) en+=t->tok[i*D+d]*t->tok[i*D+d];
+                    en=sqrtf(en+1e-10f);
+                    if(en>1e-8f){
+                        float dot=0; for(int d=0;d<D;d++) dot+=prompt_anchor[d]*t->tok[i*D+d];
+                        raw[i]+=c_prompt*(dot/(prompt_anchor_norm*en));
+                    }
+                }
+                if(mw->unigram[i]<1e-6f) raw[i]-=2.0f;
+                else if(mw->unigram[i]>0.01f) raw[i]-=0.3f*(mw->unigram[i]-0.01f)*100.0f;
+            }
         }
         free(heb); free(pro);
         /* repetition penalty: stronger for recent, milder for older */
@@ -1393,8 +1413,11 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         if(!has_tf){/* no transformer: greedy with slight noise */
             if(step<10){ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
             }else{ch=sample_nucleus(raw,V,0.35f,0.55f);}
-        }else if(step<4){
+        }else if(step<2){
             ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
+        }else if(step<5){
+            float vm=vel?vel->temp_mul:1.0f;
+            ch=sample_nucleus(raw,V,clampf(temp*tm*vm*0.72f,0.22f,0.55f),0.60f);
         }else{float vm=vel?vel->temp_mul:1.0f;ch=sample_nucleus(raw,V,clampf(temp*tm*vm,0.25f,1.35f),0.85f);}
         free(raw);
         prev_chosen=ch;
@@ -1429,7 +1452,7 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
     }
     /* export destiny back to global (0.7 old + 0.3 new) */
     if(global_destiny) for(int d=0;d<D;d++) global_destiny[d]=0.7f*global_destiny[d]+0.3f*destiny[d];
-    free(destiny);free(prev_logits); return gl;
+    free(destiny);free(prev_logits);free(prompt_anchor); return gl;
 }
 
 /* ── SPA — Sentence Phonon Attention ── */

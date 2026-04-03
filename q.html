@@ -1280,6 +1280,8 @@ function genSentence(prompt,temp,gdest,velocity){
   const D=tf&&tf.loaded?tf.D:48;
   if(tf&&tf.loaded)tf.reset();
   const destiny=new Float32Array(D);
+  const promptAnchor=new Float32Array(D);
+  let promptAnchorNorm=0;
   if(gdest)for(let d=0;d<D;d++)destiny[d]=0.3*gdest[d];
   const prevLogits=new Float32Array(V);
   let prevChosen=-1;
@@ -1291,6 +1293,14 @@ function genSentence(prompt,temp,gdest,velocity){
   // feed prompt through transformer
   if(tf&&tf.loaded){
     for(let i=0;i<prompt.length&&i<(tf.CTX-1);i++)tf.forward(prompt[i],i);
+  }
+  for(let i=0;i<prompt.length;i++){
+    if(prompt[i]>=0&&prompt[i]<V)for(let d=0;d<D;d++)promptAnchor[d]+=tokEmb[prompt[i]*D+d];
+  }
+  if(prompt.length){
+    for(let d=0;d<D;d++)promptAnchor[d]/=prompt.length;
+    for(let d=0;d<D;d++)promptAnchorNorm+=promptAnchor[d]*promptAnchor[d];
+    promptAnchorNorm=Math.sqrt(promptAnchorNorm+1e-10);
   }
 
   for(let step=0;step<120&&out.length<256;step++){
@@ -1373,6 +1383,7 @@ function genSentence(prompt,temp,gdest,velocity){
       cBg*=focus;
       cTg*=focus;
       cDoc*=focus;
+      var cPrompt=(hasTf&&promptAnchorNorm>1e-8&&step<6)?((step<2?0.14:0.09)*focus):0;
     }
 
     for(let i=0;i<V;i++){
@@ -1386,6 +1397,14 @@ function genSentence(prompt,temp,gdest,velocity){
       }
       raw[i]+=cHeb*heb[i]+cPro*pro[i]+cDs*ds+cBg*bg+cTg*tg;
       if(velocity&&velocity.docSignal)raw[i]+=cDoc*velocity.docSignal[i];
+      if(cPrompt>0){
+        let en=0;for(let d=0;d<D;d++)en+=tokEmb[i*D+d]*tokEmb[i*D+d];
+        en=Math.sqrt(en+1e-10);
+        if(en>1e-8){
+          let dot=0;for(let d=0;d<D;d++)dot+=promptAnchor[d]*tokEmb[i*D+d];
+          raw[i]+=cPrompt*(dot/(promptAnchorNorm*en));
+        }
+      }
       if(mw.unigram[i]<1e-6)raw[i]-=2;
       else if(mw.unigram[i]>0.01)raw[i]-=0.3*(mw.unigram[i]-0.01)*100;
     }
@@ -1408,8 +1427,11 @@ function genSentence(prompt,temp,gdest,velocity){
     if(!hasTf){
       if(step<10){ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}}
       else ch=sampleNucleus(raw,V,0.35,0.55);
-    }else if(step<4){
+    }else if(step<2){
       ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}
+    }else if(step<5){
+      const velTemp=velocity?velocity.tempMul:1;
+      ch=sampleNucleus(raw,V,Math.max(0.22,Math.min(0.55,temp*mod.t*velTemp*0.72)),0.60);
     }else{
       const velTemp=velocity?velocity.tempMul:1;
       ch=sampleNucleus(raw,V,Math.max(0.25,Math.min(1.35,temp*mod.t*velTemp)),0.85);
