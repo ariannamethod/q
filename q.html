@@ -1296,6 +1296,19 @@ async function initCorpus(text){
   $('#btn-gen').disabled=false;$('#prompt').disabled=false;$('#btn-send').disabled=false;
 }
 
+async function autoBootFromQuery(){
+  const qp=new URLSearchParams(window.location.search);
+  if(qp.get('demo')!=='1')return;
+  await initCorpus(DEMO);
+  const prompt=qp.get('prompt');
+  if(prompt){
+    setTimeout(()=>{
+      $('#prompt').value=prompt;
+      $('#btn-gen').click();
+    },200);
+  }
+}
+
 $('#btn-demo').onclick=()=>initCorpus(DEMO);
 $('#btn-gen').onclick=()=>{const v=$('#prompt').value.trim();$('#prompt').value='';if(v)log(`\nq> ${v}`,'sys');generateChain(v||null);};
 $('#btn-send').onclick=$('#btn-gen').onclick;
@@ -1317,6 +1330,8 @@ document.body.ondrop=e=>{
     else if(f.name.endsWith('.merges')){const r=new FileReader();r.onload=()=>{bpe=new BPE();bpe.loadBinary(r.result);log(`Merges loaded: ${bpe.merges.length}`,'sys');};r.readAsArrayBuffer(f);}
   }
 };
+
+autoBootFromQuery();
 </script>
 </body>
 </html>
