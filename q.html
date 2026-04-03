@@ -921,7 +921,7 @@ class Expert {
     this.A=new Float32Array(rank*d);this.B=new Float32Array(d*rank);
     for(let i=0;i<rank*d;i++)this.A[i]=0.01*(Math.random()-0.5);
     for(let i=0;i<d*rank;i++)this.B[i]=0.01*(Math.random()-0.5);
-    this.vitality=1;this.age=0;this.lowSteps=0;
+    this.vitality=1;this.overload=0;this.resonance=0;this.age=0;this.lowSteps=0;
   }
   forward(x){
     const mid=new Float32Array(this.rank);
@@ -942,7 +942,7 @@ class Expert {
 
 class Parliament {
   constructor(d,nInit=4){
-    this.d=d;this.experts=[];this.n=nInit;
+    this.d=d;this.experts=[];this.n=nInit;this.lastK=0;this.lastEntropy=0;
     for(let i=0;i<nInit;i++)this.experts.push(new Expert(d,DOE_RANK));
   }
   avgVitality(){if(!this.n)return 0;let s=0;for(let i=0;i<this.n;i++)s+=this.experts[i].vitality;return s/this.n;}
@@ -953,20 +953,29 @@ class Parliament {
       const o=this.experts[i].forward(x);outs.push(o);
       let dot=0;for(let d=0;d<this.d;d++)dot+=o[d]*x[d];votes.push(dot);
     }
-    let mx=votes[0],mn=votes[0];
-    for(let i=1;i<this.n;i++){if(votes[i]>mx)mx=votes[i];if(votes[i]<mn)mn=votes[i];}
-    const cons=(mx-mn)/(Math.abs(mx)+Math.abs(mn)+1e-8);
-    let k=Math.max(1,Math.min(this.n,Math.floor(this.n*(1-cons))));
-    const sel=[...Array(this.n).keys()].sort((a,b)=>votes[b]-votes[a]).slice(0,k);
-    const sv=votes[sel[0]];let exps=[],tot=0;
+    const sorted=[...Array(this.n).keys()].sort((a,b)=>votes[b]-votes[a]);
+    const sv=votes[sorted[0]];
+    const dist=votes.map(v=>Math.exp(v-sv));
+    const distTot=dist.reduce((a,b)=>a+b,0);
+    let entropy=0;
+    for(const dv of dist){const pr=distTot>0?dv/distTot:1/this.n;if(pr>1e-12)entropy-=pr*Math.log(pr);}
+    entropy/=Math.log(Math.max(2,this.n));
+    let k=1+Math.floor((this.n-1)*Math.max(0,Math.min(1,entropy)));
+    k=Math.max(1,Math.min(this.n,k));
+    this.lastK=k;this.lastEntropy=entropy;
+    const sel=sorted.slice(0,k);
+    let exps=[],tot=0;
     for(const i of sel){const e=Math.exp(votes[i]-sv);exps.push(e);tot+=e;}
     sel.forEach((idx,si)=>{
       const w=exps[si]/tot;
       for(let d=0;d<this.d;d++)result[d]+=w*outs[idx][d];
-      this.experts[idx].vitality=0.9*this.experts[idx].vitality+0.1*Math.abs(w);
+      this.experts[idx].vitality=0.88*this.experts[idx].vitality+0.12*Math.abs(w);
+      this.experts[idx].resonance=0.9*this.experts[idx].resonance+0.1*votes[idx];
+      this.experts[idx].overload=Math.max(0,Math.min(1,0.92*this.experts[idx].overload+0.18*Math.max(0,w-0.34)));
+      this.experts[idx].lowSteps=0;
     });
     const selSet=new Set(sel);
-    for(let i=0;i<this.n;i++)if(!selSet.has(i)){this.experts[i].vitality*=0.95;this.experts[i].lowSteps++;}
+    for(let i=0;i<this.n;i++)if(!selSet.has(i)){this.experts[i].vitality=Math.max(0,Math.min(1,0.97*this.experts[i].vitality+0.01*this.experts[i].resonance));this.experts[i].overload*=0.94;this.experts[i].lowSteps++;}
     return result;
   }
   inject(logits,x,V){
@@ -978,14 +987,14 @@ class Parliament {
     for(let i=0;i<this.n;i++){this.experts[i].hebbian(x,debt);this.experts[i].age++;}
   }
   lifecycle(){
-    this.experts=this.experts.filter(e=>!(e.lowSteps>=8&&e.vitality<0.1&&this.experts.length>2));
+    this.experts=this.experts.filter(e=>!(e.lowSteps>=10&&e.vitality<0.08&&e.age>24&&this.experts.length>2));
     const births=[];
     for(const e of this.experts){
-      if(e.vitality>0.8&&e.age>50&&this.experts.length+births.length<MAX_EXPERTS){
+      if(e.vitality>0.72&&e.age>40&&e.overload>0.35&&this.experts.length+births.length<MAX_EXPERTS){
         const c=new Expert(e.d,e.rank);
         for(let j=0;j<c.rank*c.d;j++)c.A[j]=e.A[j]+0.005*(Math.random()-0.5);
         for(let j=0;j<c.d*c.rank;j++)c.B[j]=e.B[j]+0.005*(Math.random()-0.5);
-        c.vitality=0.5;births.push(c);e.vitality*=0.6;
+        c.vitality=0.5;c.overload=0.18;c.resonance=0.5*e.resonance;births.push(c);e.vitality*=0.6;e.overload*=0.5;
       }
     }
     this.experts.push(...births);

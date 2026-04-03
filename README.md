@@ -59,11 +59,11 @@ This means unresolved expectations continue to bend continuation until they are 
 
 ### DOE Parliament (δ — the physics)
 
-Democracy of Experts. 4 LoRA experts (rank=4) that vote, learn, split, and die during inference:
+Q carries a compact **DoE-lite parliament** rather than the full standalone `DOE` organism. It is a tighter in-engine version: 4 rank-4 LoRA experts that vote, learn, split, and die during inference.
 
-- **Election**: each expert produces output via low-rank A@B projection. Vote = dot product of output with input (resonance). Variable-k selection based on consensus — high consensus → fewer experts needed
+- **Election**: each expert produces output via low-rank A@B projection. Votes are turned into an entropy-sensitive variable-`k` election — divided parliament means more voices, agreement means fewer
 - **NOTORCH**: Hebbian update from prophecy debt (predicted vs actual logits). No backward pass. The parliament learns from every generated token
-- **Lifecycle**: mitosis (vitality > 0.8, age > 50 → split with noise) and apoptosis (8 consecutive low-vitality steps → death). Parliament self-regulates
+- **Lifecycle**: overload-driven mitosis and delayed apoptosis. Experts accumulate overload when they dominate too often, split once that pressure matures, and die only after sustained low contribution
 
 ### Somatic Chambers
 

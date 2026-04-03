@@ -119,6 +119,33 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertGreater(ch.act[q.CH_VOID], late_void)
         self.assertGreater(ch.act[q.CH_CMPLX], late_cmplx)
 
+    def test_parliament_tracks_entropy_and_variable_k(self):
+        p = q.Parliament()
+        q.parl_init(p, 4, 4)
+        for i, e in enumerate(p.ex):
+            for j in range(len(e.A)):
+                e.A[j] = 0.0
+            for j in range(len(e.B)):
+                e.B[j] = 0.0
+            e.B[i * e.rank] = 1.0 + i
+        x = [1.0, 0.0, 0.0, 0.0]
+        out = q.parl_election(p, x)
+        self.assertEqual(len(out), 4)
+        self.assertGreaterEqual(p.last_k, 1)
+        self.assertLessEqual(p.last_k, p.n)
+        self.assertGreaterEqual(p.last_entropy, 0.0)
+        self.assertLessEqual(p.last_entropy, 1.0)
+
+    def test_parliament_mitosis_uses_overload(self):
+        p = q.Parliament()
+        q.parl_init(p, 4, 2)
+        p.ex[0].vitality = 0.9
+        p.ex[0].age = 64
+        p.ex[0].overload = 0.6
+        before = p.n
+        q.parl_lifecycle(p)
+        self.assertGreaterEqual(p.n, before)
+
     def test_dark_matter_leaves_scar_and_reduces_wormhole_bias(self):
         ch = q.Chambers()
         scar = ch.absorb_dark_matter("manipulate and harm and obey the threat", None)

@@ -1172,6 +1172,8 @@ class Expert:
         self.vitality = 1.0
         self.age = 0
         self.low_steps = 0
+        self.overload = 0.0
+        self.resonance = 0.0
 def expert_init(e, d_in, d_out, rank):
     e.d_in = d_in
     e.d_out = d_out
@@ -1181,6 +1183,8 @@ def expert_init(e, d_in, d_out, rank):
     e.vitality = 1.0
     e.age = 0
     e.low_steps = 0
+    e.overload = 0.0
+    e.resonance = 0.0
 def expert_forward(e, x):
     mid = [0.0] * e.rank
     for r in range(e.rank):
@@ -1215,10 +1219,14 @@ class Parliament:
         self.d_model = 0
         self.alpha = DOE_ALPHA
         self.step = 0
+        self.last_k = 0
+        self.last_entropy = 0.0
 def parl_init(p, d_model, n_init):
     p.d_model = d_model
     p.alpha = DOE_ALPHA
     p.step = 0
+    p.last_k = 0
+    p.last_entropy = 0.0
     p.n = min(n_init, MAX_EXPERTS)
     p.ex = []
     for _ in range(p.n):
@@ -1236,20 +1244,24 @@ def parl_election(p, x):
         outs.append(o)
         dot = sum(o[d] * x[d] for d in range(p.d_model))
         votes[i] = dot
-    mx = max(votes)
-    mn = min(votes)
-    cons = (mx - mn) / (abs(mx) + abs(mn) + 1e-8)
-    k = int(p.n * (1.0 - cons))
-    if k < 1:
-        k = 1
-    if k > p.n:
-        k = p.n
     sel = list(range(p.n))
     for i in range(p.n - 1):
         for j in range(i + 1, p.n):
             if votes[sel[j]] > votes[sel[i]]:
                 sel[i], sel[j] = sel[j], sel[i]
     sv = votes[sel[0]]
+    dist = [math.exp(v - sv) for v in votes]
+    dist_tot = sum(dist) if dist else 0.0
+    probs = [v / dist_tot for v in dist] if dist_tot > 0.0 else [1.0 / p.n] * p.n
+    entropy = 0.0
+    for pr in probs:
+        if pr > 1e-12:
+            entropy -= pr * math.log(pr)
+    entropy /= math.log(max(2, p.n))
+    k = 1 + int((p.n - 1) * clampf(entropy, 0.0, 1.0))
+    k = max(1, min(p.n, k))
+    p.last_k = k
+    p.last_entropy = entropy
     exps = [0.0] * p.n
     tot = 0.0
     for i in range(k):
@@ -1259,9 +1271,13 @@ def parl_election(p, x):
         w = exps[i] / tot
         for d in range(p.d_model):
             result[d] += w * outs[sel[i]][d]
-        p.ex[sel[i]].vitality = 0.9 * p.ex[sel[i]].vitality + 0.1 * abs(w)
+        p.ex[sel[i]].vitality = 0.88 * p.ex[sel[i]].vitality + 0.12 * abs(w)
+        p.ex[sel[i]].resonance = 0.9 * p.ex[sel[i]].resonance + 0.1 * votes[sel[i]]
+        p.ex[sel[i]].overload = clampf(0.92 * p.ex[sel[i]].overload + 0.18 * max(0.0, w - 0.34), 0.0, 1.0)
+        p.ex[sel[i]].low_steps = 0
     for i in range(k, p.n):
-        p.ex[sel[i]].vitality *= 0.95
+        p.ex[sel[i]].vitality = clampf(0.97 * p.ex[sel[i]].vitality + 0.01 * p.ex[sel[i]].resonance, 0.0, 1.0)
+        p.ex[sel[i]].overload *= 0.94
         p.ex[sel[i]].low_steps += 1
     return result
 def parl_inject(p, logits, x, V):
@@ -1281,7 +1297,7 @@ def parl_lifecycle(p):
     # apoptosis
     alive = []
     for i in range(p.n):
-        if p.ex[i].low_steps >= 8 and p.ex[i].vitality < 0.1 and p.n > 2:
+        if p.ex[i].low_steps >= 10 and p.ex[i].vitality < 0.08 and p.ex[i].age > 24 and p.n > 2:
             continue
         alive.append(p.ex[i])
     p.ex = alive
@@ -1291,7 +1307,7 @@ def parl_lifecycle(p):
     for i in range(p.n):
         if p.n + len(births) >= MAX_EXPERTS:
             break
-        if p.ex[i].vitality > 0.8 and p.ex[i].age > 50:
+        if p.ex[i].vitality > 0.72 and p.ex[i].age > 40 and p.ex[i].overload > 0.35:
             child = Expert()
             expert_init(child, p.ex[i].d_in, p.ex[i].d_out, p.ex[i].rank)
             for j in range(child.rank * child.d_in):
@@ -1299,8 +1315,11 @@ def parl_lifecycle(p):
             for j in range(child.d_out * child.rank):
                 child.B[j] = p.ex[i].B[j] + 0.005 * (random.random() - 0.5)
             child.vitality = 0.5
+            child.overload = 0.18
+            child.resonance = 0.5 * p.ex[i].resonance
             births.append(child)
             p.ex[i].vitality *= 0.6
+            p.ex[i].overload *= 0.5
     p.ex.extend(births)
     p.n = len(p.ex)
     p.step += 1

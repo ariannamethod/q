@@ -750,13 +750,14 @@ typedef struct{
     float *B;  /* [d_out × rank] */
     int d_in,d_out,rank;
     float vitality;
+    float overload,resonance;
     int age,low_steps;
 }Expert;
 
 typedef struct{
     Expert ex[MAX_EXPERTS]; int n;
     int d_model; float alpha;
-    int step;
+    int step,last_k; float last_entropy;
 }Parliament;
 
 static void expert_init(Expert *e, int d_in, int d_out, int rank){
@@ -765,7 +766,7 @@ static void expert_init(Expert *e, int d_in, int d_out, int rank){
     e->B=calloc(d_out*rank,sizeof(float));
     for(int i=0;i<rank*d_in;i++) e->A[i]=0.01f*((float)rand()/RAND_MAX-0.5f);
     for(int i=0;i<d_out*rank;i++) e->B[i]=0.01f*((float)rand()/RAND_MAX-0.5f);
-    e->vitality=1.0f;e->age=0;e->low_steps=0;
+    e->vitality=1.0f;e->overload=0;e->resonance=0;e->age=0;e->low_steps=0;
 }
 
 static void expert_forward(const Expert *e, const float *x, float *out){
@@ -786,7 +787,7 @@ static void expert_hebbian(Expert *e, const float *x, const float *dy, float lr)
 }
 
 static void parl_init(Parliament *p, int d_model, int n_init){
-    p->d_model=d_model;p->alpha=DOE_ALPHA;p->step=0;
+    p->d_model=d_model;p->alpha=DOE_ALPHA;p->step=0;p->last_k=0;p->last_entropy=0;
     p->n=n_init<MAX_EXPERTS?n_init:MAX_EXPERTS;
     for(int i=0;i<p->n;i++) expert_init(&p->ex[i],d_model,d_model,DOE_RANK);
 }
@@ -802,24 +803,28 @@ static void parl_election(Parliament *p, const float *x, float *result){
         float dot=0;for(int d=0;d<p->d_model;d++) dot+=outs[i][d]*x[d];
         votes[i]=dot;
     }
-    /* consensus */
-    float mx=votes[0],mn=votes[0];
-    for(int i=1;i<p->n;i++){if(votes[i]>mx)mx=votes[i];if(votes[i]<mn)mn=votes[i];}
-    float cons=(mx-mn)/(fabsf(mx)+fabsf(mn)+1e-8f);
-    int k=(int)(p->n*(1.0f-cons));if(k<1)k=1;if(k>p->n)k=p->n;
     /* top-k by insertion sort on indices */
     int sel[MAX_EXPERTS];for(int i=0;i<p->n;i++) sel[i]=i;
     for(int i=0;i<p->n-1;i++) for(int j=i+1;j<p->n;j++)
         if(votes[sel[j]]>votes[sel[i]]){int t=sel[i];sel[i]=sel[j];sel[j]=t;}
+    float sv=votes[sel[0]],dist[MAX_EXPERTS],dist_tot=0,entropy=0;
+    for(int i=0;i<p->n;i++){dist[i]=expf(votes[i]-sv);dist_tot+=dist[i];}
+    if(dist_tot>0) for(int i=0;i<p->n;i++){float pr=dist[i]/dist_tot; if(pr>1e-12f) entropy-=pr*logf(pr);}
+    entropy/=logf((float)(p->n>1?p->n:2));
+    int k=1+(int)((p->n-1)*clampf(entropy,0,1)); if(k<1)k=1; if(k>p->n)k=p->n;
+    p->last_k=k; p->last_entropy=entropy;
     /* softmax over top-k */
-    float sv=votes[sel[0]],exps[MAX_EXPERTS],tot=0;
+    float exps[MAX_EXPERTS],tot=0;
     for(int i=0;i<k;i++){exps[i]=expf(votes[sel[i]]-sv);tot+=exps[i];}
     for(int i=0;i<k;i++){
         float w=exps[i]/tot;
         for(int d=0;d<p->d_model;d++) result[d]+=w*outs[sel[i]][d];
-        p->ex[sel[i]].vitality=0.9f*p->ex[sel[i]].vitality+0.1f*fabsf(w);
+        p->ex[sel[i]].vitality=0.88f*p->ex[sel[i]].vitality+0.12f*fabsf(w);
+        p->ex[sel[i]].resonance=0.9f*p->ex[sel[i]].resonance+0.1f*votes[sel[i]];
+        p->ex[sel[i]].overload=clampf(0.92f*p->ex[sel[i]].overload+0.18f*((w-0.34f)>0?(w-0.34f):0),0,1);
+        p->ex[sel[i]].low_steps=0;
     }
-    for(int i=k;i<p->n;i++){p->ex[sel[i]].vitality*=0.95f;p->ex[sel[i]].low_steps++;}
+    for(int i=k;i<p->n;i++){p->ex[sel[i]].vitality=clampf(0.97f*p->ex[sel[i]].vitality+0.01f*p->ex[sel[i]].resonance,0,1);p->ex[sel[i]].overload*=0.94f;p->ex[sel[i]].low_steps++;}
     for(int i=0;i<p->n;i++) free(outs[i]);
 }
 
@@ -843,7 +848,7 @@ static void parl_lifecycle(Parliament *p){
     /* apoptosis */
     int alive=0;
     for(int i=0;i<p->n;i++){
-        if(p->ex[i].low_steps>=8&&p->ex[i].vitality<0.1f&&p->n>2){
+        if(p->ex[i].low_steps>=10&&p->ex[i].vitality<0.08f&&p->ex[i].age>24&&p->n>2){
             free(p->ex[i].A);free(p->ex[i].B);continue;}
         if(alive!=i) p->ex[alive]=p->ex[i];alive++;
     }
@@ -851,13 +856,14 @@ static void parl_lifecycle(Parliament *p){
     /* mitosis */
     int births=0;
     for(int i=0;i<p->n&&p->n+births<MAX_EXPERTS;i++){
-        if(p->ex[i].vitality>0.8f&&p->ex[i].age>50){
+        if(p->ex[i].vitality>0.72f&&p->ex[i].age>40&&p->ex[i].overload>0.35f){
             Expert *c=&p->ex[p->n+births];
             expert_init(c,p->ex[i].d_in,p->ex[i].d_out,p->ex[i].rank);
             for(int j=0;j<c->rank*c->d_in;j++) c->A[j]=p->ex[i].A[j]+0.005f*((float)rand()/RAND_MAX-0.5f);
             for(int j=0;j<c->d_out*c->rank;j++) c->B[j]=p->ex[i].B[j]+0.005f*((float)rand()/RAND_MAX-0.5f);
-            c->vitality=0.5f;births++;
+            c->vitality=0.5f;c->overload=0.18f;c->resonance=0.5f*p->ex[i].resonance;births++;
             p->ex[i].vitality*=0.6f;
+            p->ex[i].overload*=0.5f;
         }
     }
     p->n+=births;p->step++;
