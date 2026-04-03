@@ -1297,11 +1297,14 @@ class Interference:
         doc = doc or random.choice(self.docs)
         if not doc["heavy"]:
             return None
+        candidates = [tid for tid in doc["heavy"] if bpe is not None and is_clean_seed_token(bpe, tid)]
+        if not candidates:
+            candidates = doc["heavy"]
         if chambers is None or bpe is None:
-            return random.choice(doc["heavy"])
+            return random.choice(candidates)
         dom = chambers.dominant()
         scored = []
-        for tid in doc["heavy"]:
+        for tid in candidates:
             token = bpe_decode_token(bpe, tid).strip().lower()
             score = 0.1
             if token in ANCHORS and ANCHORS[token] == dom:
@@ -1537,7 +1540,7 @@ def parl_notorch(p, x, debt, dlen):
     p.last_consolidations = 0
     for i in range(p.n):
         expert_hebbian(p.ex[i], x, ds, 0.001)
-        if p.ex[i].plasticity_mass > 0.003 and expert_consolidate(p.ex[i]):
+        if p.ex[i].plasticity_mass > 0.002 and expert_consolidate(p.ex[i]):
             p.last_consolidations += 1
         p.ex[i].age += 1
 def parl_lifecycle(p):
@@ -1835,6 +1838,16 @@ def coherence_score(mw, ids, n, V):
         len_bonus = -0.5
     tri_norm = tri_sum / (n - 2) if n > 2 else 0
     return bi_sum / (n - 1) + 0.5 * hb_sum / (n - 1) + 0.8 * tri_norm + len_bonus
+def surface_coherence_score(bpe, ids):
+    if not ids:
+        return -1.0
+    score = surface_transition_adjust(bpe, -1, ids[0], 0)
+    if is_clean_seed_token(bpe, ids[0]):
+        score += 0.18
+    limit = min(len(ids), 12)
+    for i in range(1, limit):
+        score += surface_transition_adjust(bpe, ids[i - 1], ids[i], 1)
+    return score
 # ── boundary check ──
 def is_boundary(bpe, tid):
     if tid < 0 or tid >= bpe.vocab_size:
@@ -1857,6 +1870,50 @@ def starts_with_space(bpe, tid):
     if len(b) == 0:
         return False
     return b[0] == ord(' ')
+def opens_segment(bpe, tid):
+    if tid < 0 or tid >= bpe.vocab_size:
+        return True
+    b = bpe.vocab_bytes.get(tid, b"")
+    for i in range(len(b) - 1, -1, -1):
+        c = b[i]
+        if c in (ord(' '), ord('\n'), ord('\r'), ord('\t')):
+            continue
+        return c in (ord('('), ord('['), ord('{'), ord('"'), ord('\''), ord(':'), ord(';'))
+    return True
+def is_lower_fragment_start(bpe, tid):
+    if tid < 0 or tid >= bpe.vocab_size:
+        return False
+    b = bpe.vocab_bytes.get(tid, b"")
+    return len(b) > 0 and b[0] != ord(' ') and ord('a') <= b[0] <= ord('z')
+def is_clean_seed_token(bpe, tid):
+    if tid < 0 or tid >= bpe.vocab_size:
+        return False
+    if starts_with_space(bpe, tid):
+        return True
+    b = bpe.vocab_bytes.get(tid, b"")
+    return len(b) > 0 and not (ord('a') <= b[0] <= ord('z'))
+def surface_transition_adjust(bpe, prev_tid, cur_tid, step):
+    if cur_tid < 0 or cur_tid >= bpe.vocab_size:
+        return 0.0
+    if step == 0:
+        return -1.15 if is_lower_fragment_start(bpe, cur_tid) else 0.0
+    if prev_tid >= 0 and (is_boundary(bpe, prev_tid) or opens_segment(bpe, prev_tid)):
+        if is_lower_fragment_start(bpe, cur_tid):
+            return -1.05
+        if starts_with_space(bpe, cur_tid):
+            return 0.06
+    return 0.0
+def display_start_index(bpe, ids):
+    for i, tid in enumerate(ids):
+        s = bpe_decode_token(bpe, tid)
+        if not s:
+            continue
+        c = s[0]
+        if i == 0 and (c.isalnum() or c in "\"'([{"):
+            return i
+        if c.isspace():
+            return i
+    return 0
 # ── generate sentence ──
 def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr, velocity=None, doc_signal=None):
     tf_reset(t)
@@ -1994,9 +2051,13 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
                 if ctx[ri] == ctx[cl - 2] and ctx[ri + 1] < V:
                     raw[ctx[ri + 1]] *= 0.2
 
+        prev_tok = ctx[cl - 1] if cl > 0 else -1
+        for i in range(V):
+            raw[i] += surface_transition_adjust(bpe, prev_tok, i, step)
+
         # hybrid decode
         if not has_tf:
-            if step < 6:
+            if step < 10:
                 ch_tok = 0
                 mx_val = raw[0]
                 for i in range(1, V):
@@ -2004,7 +2065,7 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
                         mx_val = raw[i]
                         ch_tok = i
             else:
-                ch_tok = sample_nucleus(raw, V, 0.5, 0.7)
+                ch_tok = sample_nucleus(raw, V, 0.35, 0.55)
         elif step < 4:
             ch_tok = 0
             mx_val = raw[0]
@@ -2193,7 +2254,8 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         if active_chunk is not None:
             events["chunks"].append({"step": si, "doc_name": active_doc.get("name") if active_doc is not None else None, "chunk_start": int(active_chunk.get("start", 0)), "resonance": float(len(active_chunk.get("heavy", [])))})
         if active_chunk is not None and t.D > 0 and active_chunk.get("heavy"):
-            seed_tok = active_chunk["heavy"][0]
+            clean_heavy = [tid for tid in active_chunk["heavy"] if is_clean_seed_token(bpe, tid)]
+            seed_tok = clean_heavy[0] if clean_heavy else active_chunk["heavy"][0]
             if 0 <= seed_tok < t.V:
                 for d in range(t.D):
                     gdest[d] = 0.97 * gdest[d] + 0.03 * t.tok[seed_tok * t.D + d]
@@ -2201,16 +2263,17 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
 
         prompt = None
         used_interference = False
-        if interference is not None and interference.docs and random.random() < clampf(0.3 + vel["interf_bonus"], 0.05, 0.5):
+        if input_text:
+            inp_ids = bpe_encode(bpe, input_text.encode("utf-8", errors="replace"), len(input_text.encode("utf-8", errors="replace")), 128)
+            if inp_ids:
+                starts = [i for i in range(len(inp_ids)) if i == 0 or starts_with_space(bpe, inp_ids[i])]
+                st = random.choice(starts) if starts else random.randint(0, max(0, len(inp_ids) - 2))
+                prompt = inp_ids[st:st + 2]
+        if prompt is None and interference is not None and interference.docs and random.random() < clampf(0.3 + vel["interf_bonus"], 0.05, 0.5):
             seed = interference.inject_seed(ch, bpe, periodic, active_chunk or active_doc)
             if seed is not None:
                 prompt = [seed]
                 used_interference = True
-        if prompt is None and input_text:
-            inp_ids = bpe_encode(bpe, input_text.encode("utf-8", errors="replace"), len(input_text.encode("utf-8", errors="replace")), 128)
-            if inp_ids:
-                st = random.randint(0, max(0, len(inp_ids) - 2))
-                prompt = inp_ids[st:st + 2]
         pl = len(prompt) if prompt is not None else 0
         if prompt is None:
             start = -1
@@ -2264,7 +2327,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             if cand > 0 and gdest_save is not None:
                 gdest[:] = list(gdest_save)
             result = gen_sent(t, bpe, mw, prompt, pl, temp, 256, parl, gdest, ch, vel, doc_signal)
-            sc = coherence_score(mw, result, len(result), t.V)
+            sc = coherence_score(mw, result, len(result), t.V) + 0.6 * surface_coherence_score(bpe, result)
             if sc > best_sc:
                 best_sc = sc
                 best_ol = len(result)
@@ -2288,7 +2351,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
                     direction = -direction if direction != 0 else 1
                     best_out = gen_sent(t, bpe, mw, prompt, len(prompt), 0.55 if has_weights else 0.7, 256, parl, gdest, ch, vel, doc_signal)
                     best_ol = len(best_out)
-                    best_sc = coherence_score(mw, best_out, best_ol, t.V)
+                    best_sc = coherence_score(mw, best_out, best_ol, t.V) + 0.6 * surface_coherence_score(bpe, best_out)
                     if best_sc < 0.15:
                         ch.debt = clampf(ch.debt + 0.04, 0.0, 1.0)
                     else:
@@ -2304,7 +2367,8 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         else:
             text_parts = []
             printed = 0
-            for i in range(best_ol):
+            start_idx = display_start_index(bpe, best_out)
+            for i in range(start_idx, best_ol):
                 if printed >= 200:
                     break
                 s = bpe_decode_token(bpe, best_out[i])
@@ -2317,7 +2381,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             if wormhole:
                 sys.stdout.write("  {wormhole}")
             print()
-            out_text = "".join(text_parts)
+            out_text = "".join(text_parts).lstrip()
             ch.feel(out_text, periodic)
             if out_text:
                 ingest_ids(mw, bpe_encode(bpe, out_text.encode("utf-8", errors="replace"), len(out_text.encode("utf-8", errors="replace")), 256), 0.005)
@@ -2355,8 +2419,8 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
             prompt = chain_ids[seed_src][chain_lens[seed_src] - nprom:chain_lens[seed_src]]
             reseed_temp = 0.55 if has_weights else 0.7
             result = gen_sent(t, bpe, mw, prompt, nprom, reseed_temp, 256, parl, gdest, ch, vel, doc_signal)
-            new_sc = coherence_score(mw, result, len(result), t.V)
-            old_sc = coherence_score(mw, chain_ids[weak_idx], chain_lens[weak_idx], t.V)
+            new_sc = coherence_score(mw, result, len(result), t.V) + 0.6 * surface_coherence_score(bpe, result)
+            old_sc = coherence_score(mw, chain_ids[weak_idx], chain_lens[weak_idx], t.V) + 0.6 * surface_coherence_score(bpe, chain_ids[weak_idx])
             if new_sc > old_sc * 0.7 or len(result) > chain_lens[weak_idx]:  # accept if reasonable
                 chain_ids[weak_idx] = list(result)
                 chain_lens[weak_idx] = len(result)

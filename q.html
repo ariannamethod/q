@@ -355,6 +355,43 @@ class BPE {
     if(!b||!b.length)return false;
     return b[0]===32;
   }
+  opensSegment(id){
+    const b=this.vocabBytes[id];
+    if(!b||!b.length)return true;
+    for(let i=b.length-1;i>=0;i--){
+      const c=b[i];
+      if(c===32||c===10||c===13||c===9)continue;
+      return c===40||c===91||c===123||c===34||c===39||c===58||c===59;
+    }
+    return true;
+  }
+  isLowerFragmentStart(id){
+    const b=this.vocabBytes[id];
+    return !!(b&&b.length&&b[0]!==32&&b[0]>=97&&b[0]<=122);
+  }
+  isCleanSeedToken(id){
+    const b=this.vocabBytes[id];
+    return !!(b&&b.length&&(b[0]===32||b[0]<97||b[0]>122));
+  }
+  surfaceTransitionAdjust(prevId,curId,step){
+    if(step===0)return this.isLowerFragmentStart(curId)?-1.15:0;
+    if(prevId>=0&&(this.isBoundary(prevId)||this.opensSegment(prevId))){
+      if(this.isLowerFragmentStart(curId))return -1.05;
+      if(this.startsWithSpace(curId))return 0.06;
+    }
+    return 0;
+  }
+
+  displayStartIndex(ids){
+    for(let i=0;i<ids.length;i++){
+      const s=this.decode([ids[i]]);
+      if(!s)continue;
+      const c=s[0];
+      if(i===0&&(/[A-Za-z0-9"'([{]/.test(c)))return i;
+      if(c===' ')return i;
+    }
+    return 0;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -872,8 +909,10 @@ class Interference {
     if(!this.docs.length)return null;
     const doc=this.docs[Math.floor(Math.random()*this.docs.length)];
     const dom=currentChambers.dominant();
-    let best=doc.heavy[0],bestScore=-Infinity;
-    for(const tid of doc.heavy){
+    const heavy=doc.heavy.filter(tid=>currentBpe.isCleanSeedToken(tid));
+    const candidates=heavy.length?heavy:doc.heavy;
+    let best=candidates[0],bestScore=-Infinity;
+    for(const tid of candidates){
       const word=currentBpe.decode([tid]).trim().toLowerCase();
       let score=Math.random()*0.05;
       if(word in ANCHORS&&ANCHORS[word]===dom)score+=1;
@@ -888,8 +927,10 @@ class Interference {
   injectSeedFromDoc(doc,currentChambers,currentBpe,currentPeriodic){
     if(!doc||!doc.heavy.length)return null;
     const dom=currentChambers.dominant();
-    let best=doc.heavy[0],bestScore=-Infinity;
-    for(const tid of doc.heavy){
+    const heavy=doc.heavy.filter(tid=>currentBpe.isCleanSeedToken(tid));
+    const candidates=heavy.length?heavy:doc.heavy;
+    let best=candidates[0],bestScore=-Infinity;
+    for(const tid of candidates){
       const word=currentBpe.decode([tid]).trim().toLowerCase();
       let score=Math.random()*0.05;
       if(word in ANCHORS&&ANCHORS[word]===dom)score+=1;
@@ -1033,7 +1074,7 @@ class Parliament {
   }
   notorch(x,debt){
     this.lastConsolidations=0;
-    for(let i=0;i<this.n;i++){this.experts[i].hebbian(x,debt);if(this.experts[i].plasticityMass>0.003&&this.experts[i].consolidate())this.lastConsolidations++;this.experts[i].age++;}
+    for(let i=0;i<this.n;i++){this.experts[i].hebbian(x,debt);if(this.experts[i].plasticityMass>0.002&&this.experts[i].consolidate())this.lastConsolidations++;this.experts[i].age++;}
   }
   lifecycle(){
     const before=this.experts.length;
@@ -1169,6 +1210,14 @@ function coherenceScore(ids){
   const triNorm=ids.length>2?triSum/(ids.length-2):0;
   return biSum/(ids.length-1)+0.5*hbSum/(ids.length-1)+0.8*triNorm+lenBonus;
 }
+function surfaceCoherenceScore(ids){
+  if(!ids.length)return-1;
+  let score=bpe.surfaceTransitionAdjust(-1,ids[0],0);
+  if(bpe.isCleanSeedToken(ids[0]))score+=0.18;
+  const limit=Math.min(ids.length,12);
+  for(let i=1;i<limit;i++)score+=bpe.surfaceTransitionAdjust(ids[i-1],ids[i],1);
+  return score;
+}
 
 // zero token embedding table for MetaWeights-only mode (matches C zero-weight fallback)
 let _zeroTokCache=null;
@@ -1282,12 +1331,16 @@ function genSentence(prompt,temp,gdest,velocity){
       for(let ri=0;ri<ctx.length-1;ri++)
         if(ctx[ri]===ctx[ctx.length-2]&&ctx[ri+1]<V)raw[ctx[ri+1]]*=0.2;
     }
+    {
+      const prevTok=ctx.length?ctx[ctx.length-1]:-1;
+      for(let i=0;i<V;i++)raw[i]+=bpe.surfaceTransitionAdjust(prevTok,i,step);
+    }
 
     // hybrid decode
     let ch;
     if(!hasTf){
-      if(step<6){ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}}
-      else ch=sampleNucleus(raw,V,0.5,0.7);
+      if(step<10){ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}}
+      else ch=sampleNucleus(raw,V,0.35,0.55);
     }else if(step<4){
       ch=0;let mx=raw[0];for(let i=1;i<V;i++)if(raw[i]>mx){mx=raw[i];ch=i;}
     }else{
@@ -1431,20 +1484,22 @@ function generateChain(inputText){
     const activeChunk=activeDoc?interference.chooseChunk(activeDoc,inputText,chambers,periodic,mw,bpe):null;
     velocity.docSignal=activeChunk?interferenceSignal(activeChunk,V):null;
     if(activeChunk&&activeChunk.heavy.length){
-      const seedTok=activeChunk.heavy[0];
+      const cleanHeavy=activeChunk.heavy.filter(tid=>bpe.isCleanSeedToken(tid));
+      const seedTok=(cleanHeavy.length?cleanHeavy:activeChunk.heavy)[0];
       if(seedTok>=0&&seedTok<V)for(let d=0;d<D;d++)gdest[d]=0.97*gdest[d]+0.03*tokEmb[seedTok*D+d];
     }
     let prompt=null,usedInterf=false;
-    if(interference&&interference.docs.length&&Math.random()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
-      const seed=activeChunk?interference.injectSeedFromDoc(activeChunk,chambers,bpe,periodic):(activeDoc?interference.injectSeedFromDoc(activeDoc,chambers,bpe,periodic):interference.injectSeed(chambers,bpe,periodic));
-      if(seed!==null){prompt=[seed];usedInterf=true;}
-    }
-    if(!prompt&&inputText){
+    if(inputText){
       const inpIds=bpe.encode(inputText);
       if(inpIds.length){
-        const st=Math.floor(Math.random()*Math.max(1,inpIds.length-1));
+        const starts=inpIds.map((tid,i)=>(i===0||bpe.startsWithSpace(tid))?i:-1).filter(i=>i>=0);
+        const st=starts.length?starts[Math.floor(Math.random()*starts.length)]:Math.floor(Math.random()*Math.max(1,inpIds.length-1));
         prompt=inpIds.slice(st,Math.min(st+2,inpIds.length));
       }
+    }
+    if(!prompt&&interference&&interference.docs.length&&Math.random()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
+      const seed=activeChunk?interference.injectSeedFromDoc(activeChunk,chambers,bpe,periodic):(activeDoc?interference.injectSeedFromDoc(activeDoc,chambers,bpe,periodic):interference.injectSeed(chambers,bpe,periodic));
+      if(seed!==null){prompt=[seed];usedInterf=true;}
     }
 
     let start=-1;
@@ -1487,7 +1542,7 @@ function generateChain(inputText){
     for(let cand=0;cand<3;cand++){
       if(cand>0)gdest.set(gdestSave);
       const o=genSentence(prompt,temp,gdest,velocity);
-      const sc=coherenceScore(o);
+      const sc=coherenceScore(o)+0.6*surfaceCoherenceScore(o);
       if(sc>bestSc){bestSc=sc;bestOut=o;}
       if(bestSc>1&&bestOut.length>12)break;
     }
@@ -1505,14 +1560,14 @@ function generateChain(inputText){
           dir=dir!==0?-dir:1;
           const whPrompt=[...bestOut.slice(Math.max(0,bestOut.length-3)),farthest.heavy[Math.floor(Math.random()*farthest.heavy.length)]];
           bestOut=genSentence(whPrompt,tf&&tf.loaded?0.55:0.7,gdest,velocity);
-          bestSc=coherenceScore(bestOut);
+          bestSc=coherenceScore(bestOut)+0.6*surfaceCoherenceScore(bestOut);
           if(bestSc<0.15)chambers.debt=Math.max(0,Math.min(1,chambers.debt+0.04));
           else chambers.debt=Math.max(0,Math.min(1,chambers.debt*0.97));
         }
       }
     }
 
-    const text=bpe.decode(bestOut);
+    const text=bpe.decode(bestOut.slice(bpe.displayStartIndex(bestOut))).replace(/^\s+/,'');
     chainIds.push(bestOut);chainLens.push(bestOut.length);
     if(bestOut.length<5||(bestSc<0.01&&bestOut.length<8)){
       addStep(si+1,dir,'[...]');
@@ -1540,8 +1595,8 @@ function generateChain(inputText){
       const rPrompt=chainIds[seedSrc].slice(chainIds[seedSrc].length-nprom);
       const rTemp=tf&&tf.loaded?0.55:0.7;
       const rOut=genSentence(rPrompt,rTemp,gdest,velocity);
-      const newSc=coherenceScore(rOut);
-      const oldSc=coherenceScore(chainIds[weakIdx]);
+      const newSc=coherenceScore(rOut)+0.6*surfaceCoherenceScore(rOut);
+      const oldSc=coherenceScore(chainIds[weakIdx])+0.6*surfaceCoherenceScore(chainIds[weakIdx]);
       if(newSc>oldSc*0.7||rOut.length>chainIds[weakIdx].length){ // accept if reasonable
         chainIds[weakIdx]=rOut;chainLens[weakIdx]=rOut.length;
         const rText=bpe.decode(rOut);

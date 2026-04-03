@@ -1,4 +1,5 @@
 import os
+import random
 import sqlite3
 import tempfile
 import unittest
@@ -39,6 +40,20 @@ class UnifiedContractTests(unittest.TestCase):
             ch = q.Chambers()
             seed = itf.inject_seed(ch, bpe, q.PeriodicTable())
             self.assertIsNotNone(seed)
+
+    def test_interference_prefers_clean_seed_tokens_when_available(self):
+        bpe = q.BPE()
+        bpe.vocab_size = 2
+        bpe.vocab_bytes = {
+            0: b"atable",
+            1: b" clarity",
+        }
+        itf = q.Interference()
+        itf.docs = [{"name": "x.txt", "heavy": [0, 1], "keywords": ["clarity"], "chunks": []}]
+        ch = q.Chambers()
+        seed = itf.inject_seed(ch, bpe, q.PeriodicTable(), itf.docs[0])
+        self.assertEqual(seed, 1)
+        self.assertTrue(q.is_clean_seed_token(bpe, seed))
 
     def test_memory_roundtrip(self):
         mw = q.MetaW()
@@ -119,6 +134,17 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertGreater(ch.act[q.CH_VOID], late_void)
         self.assertGreater(ch.act[q.CH_CMPLX], late_cmplx)
 
+    def test_surface_transition_penalizes_lowercase_fragments_after_boundary(self):
+        bpe = q.BPE()
+        bpe.vocab_size = 3
+        bpe.vocab_bytes = {
+            0: b" dream.",
+            1: b"atable",
+            2: b" clarity",
+        }
+        self.assertLess(q.surface_transition_adjust(bpe, 0, 1, 3), 0.0)
+        self.assertGreaterEqual(q.surface_transition_adjust(bpe, 0, 2, 3), 0.0)
+
     def test_parliament_tracks_entropy_and_variable_k(self):
         p = q.Parliament()
         q.parl_init(p, 4, 4)
@@ -167,6 +193,7 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertGreaterEqual(p.n, before)
 
     def test_parliament_notorch_consolidates_trace_mass(self):
+        random.seed(0)
         p = q.Parliament()
         q.parl_init(p, 4, 2)
         x = [1.0, 0.8, 0.6, 0.4]

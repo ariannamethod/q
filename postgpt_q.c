@@ -730,12 +730,14 @@ static const InterferenceChunk *interf_choose_chunk(const InterferenceDoc *doc, 
     }
     return best;
 }
+static int is_clean_seed_token(const BPE *bpe, int id);
 static int interf_seed(const Interference *itf, const Chambers *c, const BPE *bpe, const PeriodicTable *pt){
     if(!itf||itf->n_docs<=0) return -1;
     const InterferenceDoc *doc=&itf->docs[rand()%itf->n_docs];
     if(doc->n_heavy<=0) return -1;
     int dom=ch_dominant(c),best=doc->heavy[rand()%doc->n_heavy]; float best_score=-1e30f;
     for(int i=0;i<doc->n_heavy&&i<MAX_HEAVY;i++){
+        if(!is_clean_seed_token(bpe,doc->heavy[i])) continue;
         char buf[64]; float sc=((float)rand()/RAND_MAX)*0.05f; bpe_decode_token(bpe,doc->heavy[i],buf,sizeof(buf));
         for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
         for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(buf,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) sc+=1.0f;
@@ -748,6 +750,7 @@ static int interf_seed_from_doc(const InterferenceDoc *doc, const Chambers *c, c
     if(!doc||doc->n_heavy<=0) return -1;
     int dom=ch_dominant(c),best=doc->heavy[rand()%doc->n_heavy]; float best_score=-1e30f;
     for(int i=0;i<doc->n_heavy&&i<MAX_HEAVY;i++){
+        if(!is_clean_seed_token(bpe,doc->heavy[i])) continue;
         char buf[64]; float sc=((float)rand()/RAND_MAX)*0.05f; bpe_decode_token(bpe,doc->heavy[i],buf,sizeof(buf));
         for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
         for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(buf,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) sc+=1.0f;
@@ -760,6 +763,7 @@ static int interf_seed_from_chunk(const InterferenceChunk *chunk, const Chambers
     if(!chunk||chunk->n_heavy<=0) return -1;
     int dom=ch_dominant(c),best=chunk->heavy[rand()%chunk->n_heavy]; float best_score=-1e30f;
     for(int i=0;i<chunk->n_heavy&&i<MAX_HEAVY;i++){
+        if(!is_clean_seed_token(bpe,chunk->heavy[i])) continue;
         char buf[64]; float sc=((float)rand()/RAND_MAX)*0.05f; bpe_decode_token(bpe,chunk->heavy[i],buf,sizeof(buf));
         for(int j=0;buf[j];j++) buf[j]=(char)tolower((unsigned char)buf[j]);
         for(size_t j=0;j<sizeof(ANCHORS)/sizeof(ANCHORS[0]);j++) if(strcmp(buf,ANCHORS[j].word)==0&&ANCHORS[j].chamber==dom) sc+=1.0f;
@@ -953,7 +957,7 @@ static void parl_notorch(Parliament *p, const float *x, const float *debt, int d
     float *ds=calloc(p->d_model,sizeof(float));
     for(int i=0;i<n;i++) ds[i]=debt[i];
     p->last_consolidations=0;
-    for(int i=0;i<p->n;i++){expert_hebbian(&p->ex[i],x,ds,0.001f); if(p->ex[i].plasticity_mass>0.003f&&expert_consolidate(&p->ex[i])) p->last_consolidations++; p->ex[i].age++;}
+    for(int i=0;i<p->n;i++){expert_hebbian(&p->ex[i],x,ds,0.001f); if(p->ex[i].plasticity_mass>0.002f&&expert_consolidate(&p->ex[i])) p->last_consolidations++; p->ex[i].age++;}
     free(ds);
 }
 
@@ -1105,6 +1109,9 @@ static void tf_forward(TF *t, int tok, int pos){
     t->clen=sl; free(x);free(xn);free(xr);
 }
 
+static int is_clean_seed_token(const BPE *bpe, int id);
+static float surface_transition_adjust(const BPE *bpe, int prev_id, int cur_id, int step);
+
 /* ── coherence score ── */
 static float coherence_score(const MetaW *mw, const int *ids, int n, int V){
     /* score a token sequence by bigram + trigram + Hebbian density */
@@ -1135,6 +1142,14 @@ static float coherence_score(const MetaW *mw, const int *ids, int n, int V){
     float tri_norm=n>2?tri_sum/(n-2):0;
     return bi_sum/(n-1)+0.5f*hb_sum/(n-1)+0.8f*tri_norm+len_bonus;
 }
+static float surface_coherence_score(const BPE *bpe, const int *ids, int n){
+    if(n<=0) return -1.0f;
+    float score=surface_transition_adjust(bpe,-1,ids[0],0);
+    if(is_clean_seed_token(bpe,ids[0])) score+=0.18f;
+    int limit=n<12?n:12;
+    for(int i=1;i<limit;i++) score+=surface_transition_adjust(bpe,ids[i-1],ids[i],1);
+    return score;
+}
 
 /* ── boundary check ── */
 static int is_boundary(const BPE *bpe, int id){
@@ -1156,6 +1171,44 @@ static int is_boundary(const BPE *bpe, int id){
 static int starts_with_space(const BPE *bpe, int id){
     if(id<0||id>=bpe->vocab_size||bpe->vocab_len[id]==0)return 0;
     return bpe->vocab_bytes[id][0]==' ';
+}
+static int opens_segment(const BPE *bpe, int id){
+    if(id<0||id>=bpe->vocab_size) return 1;
+    for(int i=bpe->vocab_len[id]-1;i>=0;i--){
+        uint8_t c=bpe->vocab_bytes[id][i];
+        if(c==' '||c=='\n'||c=='\r'||c=='\t') continue;
+        return c=='('||c=='['||c=='{'||c=='"'||c=='\''||c==':'||c==';';
+    }
+    return 1;
+}
+static int is_lower_fragment_start(const BPE *bpe, int id){
+    if(id<0||id>=bpe->vocab_size||bpe->vocab_len[id]==0) return 0;
+    uint8_t c=bpe->vocab_bytes[id][0];
+    return c!=' '&&c>='a'&&c<='z';
+}
+static int is_clean_seed_token(const BPE *bpe, int id){
+    if(id<0||id>=bpe->vocab_size||bpe->vocab_len[id]==0) return 0;
+    if(starts_with_space(bpe,id)) return 1;
+    uint8_t c=bpe->vocab_bytes[id][0];
+    return !(c>='a'&&c<='z');
+}
+static float surface_transition_adjust(const BPE *bpe, int prev_id, int cur_id, int step){
+    if(cur_id<0||cur_id>=bpe->vocab_size) return 0.0f;
+    if(step==0) return is_lower_fragment_start(bpe,cur_id)?-1.15f:0.0f;
+    if(prev_id>=0&&(is_boundary(bpe,prev_id)||opens_segment(bpe,prev_id))){
+        if(is_lower_fragment_start(bpe,cur_id)) return -1.05f;
+        if(starts_with_space(bpe,cur_id)) return 0.06f;
+    }
+    return 0.0f;
+}
+static int display_start_index(const BPE *bpe, const int *ids, int n){
+    for(int i=0;i<n;i++){
+        char buf[128]; int len=bpe_decode_token(bpe,ids[i],buf,sizeof(buf));
+        if(len<=0) continue;
+        if(i==0 && (isalnum((unsigned char)buf[0]) || buf[0]=='"' || buf[0]=='\'' || buf[0]=='(' || buf[0]=='[' || buf[0]=='{')) return i;
+        if(isspace((unsigned char)buf[0])) return i;
+    }
+    return 0;
 }
 
 /* ── generate sentence ── */
@@ -1256,11 +1309,15 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         if(cl>=2){for(int ri=0;ri<cl-1;ri++){
             if(ctx[ri]==ctx[cl-2]&&ctx[ri+1]<V) raw[ctx[ri+1]]*=0.2f;
         }}
+        {
+            int prev_tok=cl>0?ctx[cl-1]:-1;
+            for(int i=0;i<V;i++) raw[i]+=surface_transition_adjust(bpe,prev_tok,i,step);
+        }
         /* hybrid decode: without weights → more greedy; with weights → nucleus after greedy start */
         int ch;
         if(!has_tf){/* no transformer: greedy with slight noise */
-            if(step<6){ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
-            }else{ch=sample_nucleus(raw,V,0.5f,0.7f);}
+            if(step<10){ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
+            }else{ch=sample_nucleus(raw,V,0.35f,0.55f);}
         }else if(step<4){
             ch=0;float mx=raw[0];for(int i=1;i<V;i++) if(raw[i]>mx){mx=raw[i];ch=i;}
         }else{float vm=vel?vel->temp_mul:1.0f;ch=sample_nucleus(raw,V,clampf(temp*tm*vm,0.25f,1.35f),0.85f);}
@@ -1410,17 +1467,18 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
             interf_signal_chunk(active_chunk,doc_signal,t->V);
             if(active_chunk->n_heavy>0){
                 int seed_tok=active_chunk->heavy[0];
+                for(int hi=0;hi<active_chunk->n_heavy;hi++) if(is_clean_seed_token(bpe,active_chunk->heavy[hi])){seed_tok=active_chunk->heavy[hi];break;}
                 if(seed_tok>=0&&seed_tok<t->V) for(int d=0;d<t->D;d++) gdest[d]=0.97f*gdest[d]+0.03f*t->tok[seed_tok*t->D+d];
             }
         }
         int prompt[5]={0},plen=0,used_interf=0;
-        if(itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<clampf(0.3f+vel.interf_bonus,0.05f,0.5f)){
+        if(input_text&&input_text[0]){
+            int inp_ids[128]; int inp_n=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),inp_ids,128);
+            if(inp_n>0){int starts[128],ns=0; for(int i=0;i<inp_n;i++) if(i==0||starts_with_space(bpe,inp_ids[i])) starts[ns++]=i; int st=ns>0?starts[rand()%ns]:(rand()%(inp_n>2?inp_n-1:1)); prompt[0]=inp_ids[st]; if(st+1<inp_n){prompt[1]=inp_ids[st+1];plen=2;}else plen=1;}
+        }
+        if(plen==0&&itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<clampf(0.3f+vel.interf_bonus,0.05f,0.5f)){
             int seed=active_chunk?interf_seed_from_chunk(active_chunk,ch,bpe,pt):(active_doc?interf_seed_from_doc(active_doc,ch,bpe,pt):interf_seed(itf,ch,bpe,pt));
             if(seed>=0){prompt[0]=seed;plen=1;used_interf=1;}
-        }
-        if(plen==0&&input_text&&input_text[0]){
-            int inp_ids[128]; int inp_n=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),inp_ids,128);
-            if(inp_n>0){int st=rand()%(inp_n>2?inp_n-1:1); prompt[0]=inp_ids[st]; if(st+1<inp_n){prompt[1]=inp_ids[st+1];plen=2;}else plen=1;}
         }
         if(plen==0){
             int start=-1;
@@ -1462,7 +1520,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         for(int cand=0;cand<3;cand++){
             if(cand>0&&t->D<=256) memcpy(gdest,gdest_save,t->D*sizeof(float)); /* restore destiny */
             int out[256],ol=gen_sent(t,bpe,mw,prompt,plen,temp,out,256,parl,gdest,ch,&vel,doc_signal);
-            float sc=coherence_score(mw,out,ol,t->V);
+            float sc=coherence_score(mw,out,ol,t->V)+0.6f*surface_coherence_score(bpe,out,ol);
             if(sc>best_sc){best_sc=sc;best_ol=ol;memcpy(best_out,out,ol*sizeof(int));}
             if(best_sc>1.0f&&best_ol>12) break; /* early exit if first candidate is strong */
         }
@@ -1484,7 +1542,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
                     wh_prompt[wh_len++]=doc->heavy[rand()%doc->n_heavy];
                     dir=dir!=0?-dir:1;
                     best_ol=gen_sent(t,bpe,mw,wh_prompt,wh_len,has_weights?0.55f:0.7f,best_out,256,parl,gdest,ch,&vel,doc_signal);
-                    best_sc=coherence_score(mw,best_out,best_ol,t->V);
+                    best_sc=coherence_score(mw,best_out,best_ol,t->V)+0.6f*surface_coherence_score(bpe,best_out,best_ol);
                     if(best_sc<0.15f) ch->debt=clampf(ch->debt+0.04f,0,1);
                     else ch->debt=clampf(ch->debt*0.97f,0,1);
                     qexp_add_wormhole(si,best_sc>=0.15f,best_sc,ch->debt);
@@ -1497,8 +1555,8 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         if(best_ol<5||(best_sc<0.01f&&best_ol<8)){
             printf("[...]\n");
         }else{
-            char buf[128],textbuf[512]={0};int printed=0,pos=0;
-            for(int i=0;i<best_ol&&printed<200;i++){int len=bpe_decode_token(bpe,best_out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len; if(pos+len<(int)sizeof(textbuf)-1){memcpy(textbuf+pos,buf,len);pos+=len;textbuf[pos]=0;}}}
+            char buf[128],textbuf[512]={0};int printed=0,pos=0,start_idx=display_start_index(bpe,best_out,best_ol);
+            for(int i=start_idx;i<best_ol&&printed<200;i++){int len=bpe_decode_token(bpe,best_out[i],buf,sizeof(buf));if(len>0){printf("%s",buf);printed+=len; if(pos+len<(int)sizeof(textbuf)-1){memcpy(textbuf+pos,buf,len);pos+=len;textbuf[pos]=0;}}}
             if(used_interf) printf("  {interf}");
             if(wormhole) printf("  {wormhole}");
             printf("\n");
@@ -1528,8 +1586,8 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
             int nprom=chain_lens[seed_src]>3?3:chain_lens[seed_src];
             int prompt[5]; for(int i=0;i<nprom;i++) prompt[i]=chain_ids[seed_src][chain_lens[seed_src]-nprom+i];
             int out[256],ol=gen_sent(t,bpe,mw,prompt,nprom,has_weights?0.55f:0.7f,out,256,parl,gdest,ch,&vel,NULL);
-            float new_sc=coherence_score(mw,out,ol,t->V);
-            float old_sc=coherence_score(mw,chain_ids[weak_idx],chain_lens[weak_idx],t->V);
+            float new_sc=coherence_score(mw,out,ol,t->V)+0.6f*surface_coherence_score(bpe,out,ol);
+            float old_sc=coherence_score(mw,chain_ids[weak_idx],chain_lens[weak_idx],t->V)+0.6f*surface_coherence_score(bpe,chain_ids[weak_idx],chain_lens[weak_idx]);
             if(new_sc>old_sc*0.7f||ol>chain_lens[weak_idx]){ /* accept if reasonable */
                 chain_lens[weak_idx]=ol; memcpy(chain_ids[weak_idx],out,ol*sizeof(int));
                 printf("  [%2d] + ",weak_idx+1);
