@@ -166,6 +166,12 @@ python3 postgpt_q.py q.merges q.txt
 
 Requires: `q.merges` (BPE merge table, binary) and `q.txt` (corpus).
 
+If you need a compact runtime `.bin` export from preserved `.pt` checkpoints, use:
+
+```bash
+python3 tools/export_q_weights.py weights/rrpram3_janus3.pt weights/exported_weights.bin
+```
+
 ### Tests
 
 ```bash
