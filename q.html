@@ -1218,6 +1218,24 @@ function surfaceCoherenceScore(ids){
   for(let i=1;i<limit;i++)score+=bpe.surfaceTransitionAdjust(ids[i-1],ids[i],1);
   return score;
 }
+function metaweightsFieldScale(step){return Math.max(0.55,Math.min(1.0,0.55+0.045*step));}
+function promptFocusScale(hasTf,plen,step){
+  if(hasTf||plen<=1)return 1.0;
+  if(step<=4)return 0.62;
+  if(step<=8)return 0.82;
+  return 1.0;
+}
+function anchoredPromptFromInput(text,maxTokens=4){
+  const inpIds=bpe.encode(text);
+  if(!inpIds.length)return null;
+  let start=0;
+  if(!bpe.isCleanSeedToken(inpIds[start])){
+    let found=false;
+    for(let i=1;i<inpIds.length;i++)if(bpe.startsWithSpace(inpIds[i])&&bpe.isCleanSeedToken(inpIds[i])){start=i;found=true;break;}
+    if(!found)for(let i=1;i<inpIds.length;i++)if(bpe.startsWithSpace(inpIds[i])){start=i;break;}
+  }
+  return inpIds.slice(start,Math.min(inpIds.length,start+maxTokens));
+}
 
 // zero token embedding table for MetaWeights-only mode (matches C zero-weight fallback)
 let _zeroTokCache=null;
@@ -1307,6 +1325,21 @@ function genSentence(prompt,temp,gdest,velocity){
       cBg*=velocity.bgMul;
       cTg*=velocity.tgMul;
     }
+    let cDoc=hasTf?0.18:0.32;
+    if(!hasTf){
+      const mwScale=metaweightsFieldScale(step);
+      cPro*=mwScale;
+      cBg*=mwScale;
+      cTg*=mwScale;
+      cDoc*=mwScale;
+    }
+    {
+      const focus=promptFocusScale(hasTf,prompt.length,step);
+      cPro*=focus;
+      cBg*=focus;
+      cTg*=focus;
+      cDoc*=focus;
+    }
 
     for(let i=0;i<V;i++){
       const bg=mw.queryBi(ctx[ctx.length-1],i);
@@ -1318,7 +1351,7 @@ function genSentence(prompt,temp,gdest,velocity){
         if(en>1e-8){let dot=0;for(let d=0;d<D;d++)dot+=destiny[d]*tokEmb[i*D+d];ds=dot/(dn*en);}
       }
       raw[i]+=cHeb*heb[i]+cPro*pro[i]+cDs*ds+cBg*bg+cTg*tg;
-      if(velocity&&velocity.docSignal)raw[i]+=(hasTf?0.18:0.32)*velocity.docSignal[i];
+      if(velocity&&velocity.docSignal)raw[i]+=cDoc*velocity.docSignal[i];
       if(mw.unigram[i]<1e-6)raw[i]-=2;
       else if(mw.unigram[i]>0.01)raw[i]-=0.3*(mw.unigram[i]-0.01)*100;
     }
@@ -1490,12 +1523,7 @@ function generateChain(inputText){
     }
     let prompt=null,usedInterf=false;
     if(inputText){
-      const inpIds=bpe.encode(inputText);
-      if(inpIds.length){
-        const starts=inpIds.map((tid,i)=>(i===0||bpe.startsWithSpace(tid))?i:-1).filter(i=>i>=0);
-        const st=starts.length?starts[Math.floor(Math.random()*starts.length)]:Math.floor(Math.random()*Math.max(1,inpIds.length-1));
-        prompt=inpIds.slice(st,Math.min(st+2,inpIds.length));
-      }
+      prompt=anchoredPromptFromInput(inputText,4);
     }
     if(!prompt&&interference&&interference.docs.length&&Math.random()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
       const seed=activeChunk?interference.injectSeedFromDoc(activeChunk,chambers,bpe,periodic):(activeDoc?interference.injectSeedFromDoc(activeDoc,chambers,bpe,periodic):interference.injectSeed(chambers,bpe,periodic));

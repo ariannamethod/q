@@ -145,6 +145,28 @@ class UnifiedContractTests(unittest.TestCase):
         self.assertLess(q.surface_transition_adjust(bpe, 0, 1, 3), 0.0)
         self.assertGreaterEqual(q.surface_transition_adjust(bpe, 0, 2, 3), 0.0)
 
+    def test_metaweights_field_scale_ramps_up(self):
+        self.assertAlmostEqual(q.metaweights_field_scale(0), 0.55)
+        self.assertGreater(q.metaweights_field_scale(4), q.metaweights_field_scale(0))
+        self.assertEqual(q.metaweights_field_scale(20), 1.0)
+
+    def test_anchored_prompt_from_input_prefers_clean_boundary(self):
+        bpe = q.BPE()
+        bpe.vocab_size = 4
+        bpe.vocab_bytes = {
+            0: b"warm",
+            1: b"th",
+            2: b" in",
+            3: b" the",
+        }
+        original = q.bpe_encode
+        q.bpe_encode = lambda _bpe, _raw, _n, _cap: [0, 1, 2, 3]
+        try:
+            anchored = q.anchored_prompt_from_input(bpe, "warmth in the", 4)
+        finally:
+            q.bpe_encode = original
+        self.assertEqual(anchored, [2, 3])
+
     def test_parliament_tracks_entropy_and_variable_k(self):
         p = q.Parliament()
         q.parl_init(p, 4, 4)

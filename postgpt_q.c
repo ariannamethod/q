@@ -1110,6 +1110,7 @@ static void tf_forward(TF *t, int tok, int pos){
 }
 
 static int is_clean_seed_token(const BPE *bpe, int id);
+static int starts_with_space(const BPE *bpe, int id);
 static float surface_transition_adjust(const BPE *bpe, int prev_id, int cur_id, int step);
 
 /* ── coherence score ── */
@@ -1149,6 +1150,30 @@ static float surface_coherence_score(const BPE *bpe, const int *ids, int n){
     int limit=n<12?n:12;
     for(int i=1;i<limit;i++) score+=surface_transition_adjust(bpe,ids[i-1],ids[i],1);
     return score;
+}
+static float metaweights_field_scale(int step){
+    return clampf(0.55f + 0.045f * (float)step, 0.55f, 1.0f);
+}
+static float prompt_focus_scale(int has_tf, int plen, int step){
+    if(has_tf||plen<=1) return 1.0f;
+    if(step<=4) return 0.62f;
+    if(step<=8) return 0.82f;
+    return 1.0f;
+}
+static int anchored_prompt_from_input(const BPE *bpe, const char *text, int *out, int max_tokens){
+    int inp_ids[128];
+    int inp_n=bpe_encode(bpe,(const uint8_t*)text,(int)strlen(text),inp_ids,128);
+    if(inp_n<=0) return 0;
+    int start=0;
+    if(!is_clean_seed_token(bpe,inp_ids[start])){
+        int found=0;
+        for(int i=1;i<inp_n;i++) if(starts_with_space(bpe,inp_ids[i])&&is_clean_seed_token(bpe,inp_ids[i])){start=i;found=1;break;}
+        if(!found) for(int i=1;i<inp_n;i++) if(starts_with_space(bpe,inp_ids[i])){start=i;break;}
+    }
+    int n=inp_n-start; if(n>max_tokens) n=max_tokens;
+    if(n<=0) return 0;
+    for(int i=0;i<n;i++) out[i]=inp_ids[start+i];
+    return n;
 }
 
 /* ── boundary check ── */
@@ -1285,6 +1310,20 @@ static int gen_sent(TF *t, const BPE *bpe, MetaW *mw,
         float c_ds=(has_tf?0.3f:0.15f)*gm, c_bg=has_tf?5.0f:15.0f, c_tg=has_tf?3.0f:10.0f;
         if(vel){c_heb*=vel->heb_mul;c_pro*=vel->pro_mul*(1.0f+0.35f*p_debt);c_ds*=vel->ds_mul*(1.0f-0.20f*vel->dark_pressure);c_bg*=vel->bg_mul;c_tg*=vel->tg_mul;}
         float c_doc=has_tf?0.18f:0.32f;
+        if(!has_tf){
+            float mw_scale=metaweights_field_scale(step);
+            c_pro*=mw_scale;
+            c_bg*=mw_scale;
+            c_tg*=mw_scale;
+            c_doc*=mw_scale;
+        }
+        {
+            float focus=prompt_focus_scale(has_tf,plen,step);
+            c_pro*=focus;
+            c_bg*=focus;
+            c_tg*=focus;
+            c_doc*=focus;
+        }
         for(int i=0;i<V;i++){
             float bg=meta_bi(mw,ctx[cl-1],i);
             float tg=cl>=2?meta_tri(mw,ctx[cl-2],ctx[cl-1],i):1e-10f;
@@ -1473,8 +1512,7 @@ static void gen_chain(TF *t, const BPE *bpe, MetaW *mw, Chambers *ch,
         }
         int prompt[5]={0},plen=0,used_interf=0;
         if(input_text&&input_text[0]){
-            int inp_ids[128]; int inp_n=bpe_encode(bpe,(const uint8_t*)input_text,(int)strlen(input_text),inp_ids,128);
-            if(inp_n>0){int starts[128],ns=0; for(int i=0;i<inp_n;i++) if(i==0||starts_with_space(bpe,inp_ids[i])) starts[ns++]=i; int st=ns>0?starts[rand()%ns]:(rand()%(inp_n>2?inp_n-1:1)); prompt[0]=inp_ids[st]; if(st+1<inp_n){prompt[1]=inp_ids[st+1];plen=2;}else plen=1;}
+            plen=anchored_prompt_from_input(bpe,input_text,prompt,4);
         }
         if(plen==0&&itf&&itf->n_docs>0&&((float)rand()/RAND_MAX)<clampf(0.3f+vel.interf_bonus,0.05f,0.5f)){
             int seed=active_chunk?interf_seed_from_chunk(active_chunk,ch,bpe,pt):(active_doc?interf_seed_from_doc(active_doc,ch,bpe,pt):interf_seed(itf,ch,bpe,pt));

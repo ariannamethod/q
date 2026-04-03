@@ -1848,6 +1848,36 @@ def surface_coherence_score(bpe, ids):
     for i in range(1, limit):
         score += surface_transition_adjust(bpe, ids[i - 1], ids[i], 1)
     return score
+def metaweights_field_scale(step):
+    return clampf(0.55 + 0.045 * float(step), 0.55, 1.0)
+def prompt_focus_scale(has_tf, plen, step):
+    if has_tf or plen <= 1:
+        return 1.0
+    if step <= 4:
+        return 0.62
+    if step <= 8:
+        return 0.82
+    return 1.0
+def anchored_prompt_from_input(bpe, text, max_tokens=4):
+    raw = text.encode("utf-8", errors="replace")
+    inp_ids = bpe_encode(bpe, raw, len(raw), 128)
+    if not inp_ids:
+        return None
+    start = 0
+    if not is_clean_seed_token(bpe, inp_ids[start]):
+        found = False
+        for i in range(1, len(inp_ids)):
+            if starts_with_space(bpe, inp_ids[i]) and is_clean_seed_token(bpe, inp_ids[i]):
+                start = i
+                found = True
+                break
+        if not found:
+            for i in range(1, len(inp_ids)):
+                if starts_with_space(bpe, inp_ids[i]):
+                    start = i
+                    break
+    end = min(len(inp_ids), start + max_tokens)
+    return inp_ids[start:end] if end > start else None
 # ── boundary check ──
 def is_boundary(bpe, tid):
     if tid < 0 or tid >= bpe.vocab_size:
@@ -2020,6 +2050,17 @@ def gen_sent(t, bpe, mw, prompt, plen, temp, maxo, parl, global_destiny, ch_ptr,
             c_tg *= velocity["tg_mul"]
             c_ds *= (1.0 - 0.20 * velocity["dark_pressure"])
         c_doc = 0.18 if has_tf else 0.32
+        if not has_tf:
+            mw_scale = metaweights_field_scale(step)
+            c_pro *= mw_scale
+            c_bg *= mw_scale
+            c_tg *= mw_scale
+            c_doc *= mw_scale
+        focus = prompt_focus_scale(has_tf, plen, step)
+        c_pro *= focus
+        c_bg *= focus
+        c_tg *= focus
+        c_doc *= focus
 
         for i in range(V):
             bg = meta_bi(mw, ctx[cl - 1], i)
@@ -2264,11 +2305,7 @@ def gen_chain(t, bpe, mw, ch, cids, clen, has_weights, parl, periodic=None, inte
         prompt = None
         used_interference = False
         if input_text:
-            inp_ids = bpe_encode(bpe, input_text.encode("utf-8", errors="replace"), len(input_text.encode("utf-8", errors="replace")), 128)
-            if inp_ids:
-                starts = [i for i in range(len(inp_ids)) if i == 0 or starts_with_space(bpe, inp_ids[i])]
-                st = random.choice(starts) if starts else random.randint(0, max(0, len(inp_ids) - 2))
-                prompt = inp_ids[st:st + 2]
+            prompt = anchored_prompt_from_input(bpe, input_text, 4)
         if prompt is None and interference is not None and interference.docs and random.random() < clampf(0.3 + vel["interf_bonus"], 0.05, 0.5):
             seed = interference.inject_seed(ch, bpe, periodic, active_chunk or active_doc)
             if seed is not None:
