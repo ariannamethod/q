@@ -49,6 +49,19 @@ class UnifiedContractTests(unittest.TestCase):
             self.assertGreater(loaded.n_tri, 0)
             self.assertGreater(loaded.n_hebb, 0)
 
+    def test_periodic_memory_roundtrip(self):
+        mw = q.MetaW()
+        pt = q.PeriodicTable()
+        pt.build_from_text("resonance rhythm paradox mystery tenderness")
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "q.memory")
+            q.save_memory(mw, path, pt)
+            loaded_mw = q.MetaW()
+            loaded_pt = q.PeriodicTable()
+            self.assertTrue(q.load_memory(loaded_mw, path, loaded_pt))
+            self.assertIn("resonance", loaded_pt.elements)
+            self.assertIn("paradox", loaded_pt.elements)
+
 
 if __name__ == "__main__":
     unittest.main()

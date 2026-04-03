@@ -399,7 +399,9 @@ class MetaWeights {
     if(cl>=2){
       const p0=ctxArr[cl-2],p1=ctxArr[cl-1];
       for(const[k,p]of this.tri){
-        const a=(k/65536/65536)|0,b=((k/65536)|0)%65536,c2=k%65536;
+        const parts=k.split(',');
+        if(parts.length!==3)continue;
+        const a=Number(parts[0]),b=Number(parts[1]),c2=Number(parts[2]);
         if(a===p0&&b===p1&&c2<V&&!appeared.has(c2))out[c2]+=p*1.5; // trigrams more specific
       }
     }
@@ -775,7 +777,7 @@ function saveBrowserMemory(){
   };
   // save periodic table
   if(periodic&&periodic.elements){
-    data.periodic=Object.entries(periodic.elements).map(([w,e])=>({w,ch:e.ch,mass:e.mass}));
+    data.periodic=[...periodic.elements.entries()].map(([w,e])=>({w,ch:e.ch,mass:e.mass}));
   }
   localStorage.setItem('q.memory',JSON.stringify(data));
 }
@@ -794,7 +796,7 @@ function loadBrowserMemory(){
     if(mem.periodic&&periodic){
       for(const e of mem.periodic){
         if(e.w&&typeof e.ch==='number'&&e.ch<6){
-          periodic.elements[e.w]={ch:e.ch,mass:e.mass||0.5};
+          periodic.elements.set(e.w,{ch:e.ch,mass:e.mass||0.5});
         }
       }
     }
