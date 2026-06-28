@@ -3,6 +3,10 @@
 !spores/q.spore.bin
 *.safetensors
 *.gguf
+# notorch shim — libnotorch is compiled on first run from ariannamethod/notorch.c
+ariannamethod/libnotorch.dylib
+ariannamethod/libnotorch.so
+ariannamethod/*.o
 q.memory
 q.sqlite
 tests/run_tests
