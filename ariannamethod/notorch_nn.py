@@ -209,9 +209,10 @@ class QEngine:
     Forward/backward/update for PostGPT-Q's transformer substrate on the notorch tape.
 
     cfg: V, D, NL, CTX, NC, NR, NJ, HD, nm (mechanism count).
-    params: flat ordered list, per QPTQ minus the (zero) gate bias:
+    params: flat ordered list, per QPTQ layout:
         [tok, pos,
-         (per layer: [wq,wk,vc if NC] , [wr,vr if NR] , [wj,vj if NJ] , [gws if nm>1] ,
+         (per layer: [wq,wk,vc if NC] , [wr,vr if NR] , [wj,vj if NJ] ,
+          [gws_aug [nm,D+1] if nm>1 — last column is the trained gate bias gb] ,
           wo, up, dn)]
     lm_head is TIED to tok. Norm is parameter-free (fixed ones gamma).
     """
@@ -239,15 +240,15 @@ class QEngine:
         tok_t = Tensor.zeros(T);
         for i, v in enumerate(tok_ids):
             _tstruct(tok_t._ptr).data[i] = float(v)
-        tok_idx = _lib.nt_tape_record(tok_t._ptr, 0, -1, -1, _F(0)); tok_t._owns = False
+        tok_idx = _lib.nt_tape_record(tok_t._ptr, 0, -1, -1, _F(0))
         # constant 1.0 channel for the gate-bias augment (gb trains as the last gws column)
         ones_t = Tensor.ones(T)
-        ones_idx = _lib.nt_tape_record(ones_t._ptr, 0, -1, -1, _F(0)); ones_t._owns = False
+        ones_idx = _lib.nt_tape_record(ones_t._ptr, 0, -1, -1, _F(0))
         if tgt_ids is not None:
             tgt_t = Tensor.zeros(T)
             for i, v in enumerate(tgt_ids):
                 _tstruct(tgt_t._ptr).data[i] = float(v)
-            tgt_idx = _lib.nt_tape_record(tgt_t._ptr, 0, -1, -1, _F(0)); tgt_t._owns = False
+            tgt_idx = _lib.nt_tape_record(tgt_t._ptr, 0, -1, -1, _F(0))
 
         pi = 0
         tok_w = tp[pi]; pi += 1

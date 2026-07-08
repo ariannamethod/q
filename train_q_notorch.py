@@ -12,9 +12,10 @@ training path is now torch-free. q-coherence-from-scratch, trained from scratch.
 Usage:
     python3 train_q_notorch.py [--steps N] [--variant rrpram3_janus3|rrpram_6r] [--save out.bin]
 
-Note (v1): the per-mechanism gate bias (gbs) is exported as zeros (see notorch_nn.py).
-The magnitude "transformer gate" is inference-only (applied by postgpt_q.c), so training
-optimizes raw logits — q stays silent at inference until weights earn magnitude, by design.
+Note (v1): the per-mechanism gate bias (gbs) IS trained, via the augmented-gate trick
+(gws_aug's last column, see notorch_nn.py / export_qptq below). The magnitude
+"transformer gate" is inference-only (applied by postgpt_q.c), so training optimizes
+raw logits — q stays silent at inference until weights earn magnitude, by design.
 """
 
 import os
@@ -114,6 +115,10 @@ def export_qptq(params, cfg, path):
 
 
 def get_sequence(ids, seq_len):
+    if len(ids) <= seq_len:
+        raise ValueError(
+            f"corpus too small: {len(ids)} tokens <= seq_len={seq_len}; "
+            f"need more than seq_len+1 tokens to sample a training window")
     i = random.randint(0, len(ids) - seq_len - 1)
     return ids[i:i + seq_len], ids[i + 1:i + seq_len + 1]
 
@@ -132,7 +137,8 @@ def train(args):
     bpe = Q.BPE()
     if not Q.bpe_load(bpe, merges_path):
         print("ERROR: bpe_load failed"); return
-    raw = open(corpus_path, "rb").read()
+    with open(corpus_path, "rb") as f:
+        raw = f.read()
     ids = Q.bpe_encode(bpe, raw, len(raw), len(raw))
     print(f"  tokens={len(ids)} vocab={bpe.vocab_size}")
 
