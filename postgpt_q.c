@@ -1069,9 +1069,9 @@ static void tf_forward(TF *t, int tok, int pos){
             memcpy(t->vcc[li]+pos*(size_t)NC*HD,vc,(size_t)NC*HD*sizeof(float));
             for(int h=0;h<NC;h++){
                 float *sc=calloc(sl,sizeof(float));
-                for(int p=0;p<sl;p++){float dot=0;for(int d=0;d<HD;d++) dot+=q[h*HD+d]*t->kc[li][p*(size_t)NC*HD+h*HD+d];sc[p]=dot/sqrtf((float)HD);}
+                for(int p=0;p<sl;p++){float dot=0;for(int d=0;d<HD;d++) dot+=q[h*HD+d]*t->kc[li][p*NC*HD+h*HD+d];sc[p]=dot/sqrtf((float)HD);}
                 softmax(sc,sl);
-                for(int d=0;d<HD;d++){float v=0;for(int p=0;p<sl;p++) v+=sc[p]*t->vcc[li][p*(size_t)NC*HD+h*HD+d];co[h*HD+d]=v;}
+                for(int d=0;d<HD;d++){float v=0;for(int p=0;p<sl;p++) v+=sc[p]*t->vcc[li][p*NC*HD+h*HD+d];co[h*HD+d]=v;}
                 free(sc);
             }
             free(q);free(k);free(vc);
@@ -1084,7 +1084,7 @@ static void tf_forward(TF *t, int tok, int pos){
                 float *sc=calloc(sl,sizeof(float));
                 for(int p=0;p<sl;p++){float s=0;for(int d=0;d<D;d++) s+=xn[d]*t->L[li].wr[(h*D+d)*t->CTX+p];sc[p]=s;}
                 softmax(sc,sl);
-                for(int d=0;d<HD;d++){float v=0;for(int p=0;p<sl;p++) v+=sc[p]*t->vrc[li][p*(size_t)NR*HD+h*HD+d];ro[h*HD+d]=v;}
+                for(int d=0;d<HD;d++){float v=0;for(int p=0;p<sl;p++) v+=sc[p]*t->vrc[li][p*NR*HD+h*HD+d];ro[h*HD+d]=v;}
                 free(sc);
             }
             free(vr);
