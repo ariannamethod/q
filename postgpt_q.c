@@ -845,9 +845,9 @@ typedef struct{
 
 static void expert_init(Expert *e, int d_in, int d_out, int rank){
     e->d_in=d_in;e->d_out=d_out;e->rank=rank;
-    e->A=calloc(rank*d_in,sizeof(float));
-    e->B=calloc(d_out*rank,sizeof(float));
-    e->trace=calloc(rank*d_in,sizeof(float));
+    e->A=calloc((size_t)rank*d_in,sizeof(float));
+    e->B=calloc((size_t)d_out*rank,sizeof(float));
+    e->trace=calloc((size_t)rank*d_in,sizeof(float));
     for(int i=0;i<rank*d_in;i++) e->A[i]=0.01f*((float)rand()/RAND_MAX-0.5f);
     for(int i=0;i<d_out*rank;i++) e->B[i]=0.01f*((float)rand()/RAND_MAX-0.5f);
     e->vitality=1.0f;e->overload=0;e->resonance=0;e->plasticity_mass=0;e->age=0;e->low_steps=0;e->consolidations=0;
@@ -1043,9 +1043,9 @@ static int tf_load(TF *t, const char *path){
     #undef AR
     t->kc=calloc(nl,sizeof(float*));t->vcc=calloc(nl,sizeof(float*));t->vrc=calloc(nl,sizeof(float*));
     for(int li=0;li<(int)nl;li++){
-        t->kc[li]=calloc(ctx*(nc>0?nc*hd:1),sizeof(float));
-        t->vcc[li]=calloc(ctx*(nc>0?nc*hd:1),sizeof(float));
-        t->vrc[li]=calloc(ctx*(nr>0?nr*hd:1),sizeof(float));
+        t->kc[li]=calloc((size_t)ctx*(nc>0?(size_t)nc*hd:1),sizeof(float));
+        t->vcc[li]=calloc((size_t)ctx*(nc>0?(size_t)nc*hd:1),sizeof(float));
+        t->vrc[li]=calloc((size_t)ctx*(nr>0?(size_t)nr*hd:1),sizeof(float));
     }
     t->clen=0; t->logits=calloc(v,sizeof(float));
     fclose(f); return 1;
@@ -1062,11 +1062,11 @@ static void tf_forward(TF *t, int tok, int pos){
         memcpy(xr,x,D*sizeof(float)); rmsnorm(xn,x,D);
         float *co=NULL,*ro=NULL,*jo=NULL;
         /* content */
-        if(NC>0){co=calloc(NC*HD,sizeof(float));
-            float *q=calloc(NC*HD,sizeof(float)),*k=calloc(NC*HD,sizeof(float)),*vc=calloc(NC*HD,sizeof(float));
-            matmul(q,xn,t->L[li].wq,D,NC*HD);matmul(k,xn,t->L[li].wk,D,NC*HD);matmul(vc,xn,t->L[li].vc,D,NC*HD);
-            memcpy(t->kc[li]+pos*NC*HD,k,NC*HD*sizeof(float));
-            memcpy(t->vcc[li]+pos*NC*HD,vc,NC*HD*sizeof(float));
+        if(NC>0){co=calloc((size_t)NC*HD,sizeof(float));
+            float *q=calloc((size_t)NC*HD,sizeof(float)),*k=calloc((size_t)NC*HD,sizeof(float)),*vc=calloc((size_t)NC*HD,sizeof(float));
+            matmul(q,xn,t->L[li].wq,D,(size_t)NC*HD);matmul(k,xn,t->L[li].wk,D,(size_t)NC*HD);matmul(vc,xn,t->L[li].vc,D,(size_t)NC*HD);
+            memcpy(t->kc[li]+pos*(size_t)NC*HD,k,(size_t)NC*HD*sizeof(float));
+            memcpy(t->vcc[li]+pos*(size_t)NC*HD,vc,(size_t)NC*HD*sizeof(float));
             for(int h=0;h<NC;h++){
                 float *sc=calloc(sl,sizeof(float));
                 for(int p=0;p<sl;p++){float dot=0;for(int d=0;d<HD;d++) dot+=q[h*HD+d]*t->kc[li][p*NC*HD+h*HD+d];sc[p]=dot/sqrtf((float)HD);}
@@ -1077,9 +1077,9 @@ static void tf_forward(TF *t, int tok, int pos){
             free(q);free(k);free(vc);
         }
         /* rrpram */
-        if(NR>0){ro=calloc(NR*HD,sizeof(float));
-            float *vr=calloc(NR*HD,sizeof(float));matmul(vr,xn,t->L[li].vr,D,NR*HD);
-            memcpy(t->vrc[li]+pos*NR*HD,vr,NR*HD*sizeof(float));
+        if(NR>0){ro=calloc((size_t)NR*HD,sizeof(float));
+            float *vr=calloc((size_t)NR*HD,sizeof(float));matmul(vr,xn,t->L[li].vr,D,(size_t)NR*HD);
+            memcpy(t->vrc[li]+pos*(size_t)NR*HD,vr,(size_t)NR*HD*sizeof(float));
             for(int h=0;h<NR;h++){
                 float *sc=calloc(sl,sizeof(float));
                 for(int p=0;p<sl;p++){float s=0;for(int d=0;d<D;d++) s+=xn[d]*t->L[li].wr[(h*D+d)*t->CTX+p];sc[p]=s;}
@@ -1090,9 +1090,9 @@ static void tf_forward(TF *t, int tok, int pos){
             free(vr);
         }
         /* janus */
-        if(NJ>0){jo=calloc(NJ*HD,sizeof(float));
-            float *wjp=calloc(NJ*HD,sizeof(float)),*vjp=calloc(NJ*HD,sizeof(float));
-            matmul(wjp,xn,t->L[li].wj,D,NJ*HD);matmul(vjp,xn,t->L[li].vj,D,NJ*HD);
+        if(NJ>0){jo=calloc((size_t)NJ*HD,sizeof(float));
+            float *wjp=calloc((size_t)NJ*HD,sizeof(float)),*vjp=calloc((size_t)NJ*HD,sizeof(float));
+            matmul(wjp,xn,t->L[li].wj,D,(size_t)NJ*HD);matmul(vjp,xn,t->L[li].vj,D,(size_t)NJ*HD);
             float norm=0;for(int d=0;d<NJ*HD;d++) norm+=wjp[d]*wjp[d];
             norm=1.0f/sqrtf(norm+1e-8f);
             for(int d=0;d<NJ*HD;d++) jo[d]=vjp[d]*(wjp[d]*norm);
@@ -1108,9 +1108,9 @@ static void tf_forward(TF *t, int tok, int pos){
             if(NR>0){for(int d=0;d<NR*HD;d++) comb[off+d]=gates[gi]*ro[d];off+=NR*HD;gi++;}
             if(NJ>0){for(int d=0;d<NJ*HD;d++) comb[off+d]=gates[gi]*jo[d];off+=NJ*HD;gi++;}
         }else{int off=0;
-            if(NC>0&&co){memcpy(comb+off,co,NC*HD*sizeof(float));off+=NC*HD;}
-            if(NR>0&&ro){memcpy(comb+off,ro,NR*HD*sizeof(float));off+=NR*HD;}
-            if(NJ>0&&jo){memcpy(comb+off,jo,NJ*HD*sizeof(float));off+=NJ*HD;}
+            if(NC>0&&co){memcpy(comb+off,co,(size_t)NC*HD*sizeof(float));off+=(size_t)NC*HD;}
+            if(NR>0&&ro){memcpy(comb+off,ro,(size_t)NR*HD*sizeof(float));off+=(size_t)NR*HD;}
+            if(NJ>0&&jo){memcpy(comb+off,jo,(size_t)NJ*HD*sizeof(float));off+=(size_t)NJ*HD;}
         }
         if(co)free(co);if(ro)free(ro);if(jo)free(jo);
         float *proj=calloc(D,sizeof(float));matmul(proj,comb,t->L[li].wo,D,D);
@@ -1118,7 +1118,7 @@ static void tf_forward(TF *t, int tok, int pos){
         free(proj);free(comb);
         /* mlp */
         memcpy(xr,x,D*sizeof(float));rmsnorm(xn,x,D);
-        float *up=calloc(4*D,sizeof(float));matmul(up,xn,t->L[li].up,D,4*D);
+        float *up=calloc((size_t)4*D,sizeof(float));matmul(up,xn,t->L[li].up,D,4*D);
         for(int d=0;d<4*D;d++) if(up[d]<0) up[d]=0;
         float *dn=calloc(D,sizeof(float));matmul(dn,up,t->L[li].dn,4*D,D);
         for(int d=0;d<D;d++) x[d]=xr[d]+dn[d];
@@ -1961,15 +1961,15 @@ int main(int argc, char **argv){
         printf("[4] No weights — MetaWeights only mode\n");
         /* create minimal transformer with zero weights — gate will silence it */
         t.V=bpe.vocab_size;t.D=48;t.NH=4;t.NL=1;t.CTX=64;t.NC=2;t.NR=2;t.NJ=0;t.HD=12;
-        t.tok=calloc(t.V*t.D,sizeof(float));t.pos=calloc(t.CTX*t.D,sizeof(float));
+        t.tok=calloc((size_t)t.V*t.D,sizeof(float));t.pos=calloc((size_t)t.CTX*t.D,sizeof(float));
         t.L=calloc(1,sizeof(t.L[0]));
-        t.L[0].wq=calloc(t.NC*t.HD*t.D,sizeof(float));t.L[0].wk=calloc(t.NC*t.HD*t.D,sizeof(float));
-        t.L[0].vc=calloc(t.NC*t.HD*t.D,sizeof(float));t.L[0].wr=calloc(t.NR*t.D*t.CTX,sizeof(float));
-        t.L[0].vr=calloc(t.NR*t.HD*t.D,sizeof(float));t.L[0].wo=calloc(t.D*t.D,sizeof(float));
-        t.L[0].up=calloc(4*t.D*t.D,sizeof(float));t.L[0].dn=calloc(t.D*4*t.D,sizeof(float));
+        t.L[0].wq=calloc((size_t)t.NC*t.HD*t.D,sizeof(float));t.L[0].wk=calloc((size_t)t.NC*t.HD*t.D,sizeof(float));
+        t.L[0].vc=calloc((size_t)t.NC*t.HD*t.D,sizeof(float));t.L[0].wr=calloc((size_t)t.NR*t.D*t.CTX,sizeof(float));
+        t.L[0].vr=calloc((size_t)t.NR*t.HD*t.D,sizeof(float));t.L[0].wo=calloc((size_t)t.D*t.D,sizeof(float));
+        t.L[0].up=calloc((size_t)4*t.D*t.D,sizeof(float));t.L[0].dn=calloc((size_t)t.D*4*t.D,sizeof(float));
         t.kc=calloc(1,sizeof(float*));t.vcc=calloc(1,sizeof(float*));t.vrc=calloc(1,sizeof(float*));
-        t.kc[0]=calloc(t.CTX*t.NC*t.HD,sizeof(float));t.vcc[0]=calloc(t.CTX*t.NC*t.HD,sizeof(float));
-        t.vrc[0]=calloc(t.CTX*t.NR*t.HD,sizeof(float));
+        t.kc[0]=calloc((size_t)t.CTX*t.NC*t.HD,sizeof(float));t.vcc[0]=calloc((size_t)t.CTX*t.NC*t.HD,sizeof(float));
+        t.vrc[0]=calloc((size_t)t.CTX*t.NR*t.HD,sizeof(float));
         t.clen=0;t.logits=calloc(t.V,sizeof(float));
     }
 

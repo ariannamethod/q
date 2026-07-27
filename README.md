@@ -211,6 +211,27 @@ Runtime exports can be regenerated from preserved training checkpoints with:
 python3 tools/export_q_weights.py weights/rrpram3_janus3.pt weights/exported_weights.bin
 ```
 
+### Training on notorch — no PyTorch (Operation Napalm-2)
+
+Q's `.pt` checkpoints were originally trained on an A100 with PyTorch. Q now carries a
+from-scratch, torch-free trainer for the ε substrate: [`train_q_notorch.py`](train_q_notorch.py)
+builds the triple gated attention (Content + RRPRAM + Janus echo) on the notorch
+autograd tape through the vendored [`ariannamethod/`](ariannamethod/) shim (ctypes to a
+`libnotorch` compiled on first run), trains with the real Chuck optimizer, and exports
+the same QPTQ `.bin` the C / Python / browser engines load.
+
+```bash
+python3 train_q_notorch.py --variant rrpram3_janus3 --steps 200 --save weights/q_notorch.bin
+./q weights/q_notorch.bin q.merges q.txt
+```
+
+No `import torch` anywhere — q-coherence from scratch, trained from scratch. The Janus
+echo (`vjp ⊙ wjp/‖wjp‖`) composes from `nt_seq_rmsnorm`+`nt_scale`+`nt_mul`; the
+per-mechanism gate uses notorch's `nt_seq_gate`, and its bias is trained via an
+augmented gate (`gws` is `[nm, D+1]` over an `xn` with a constant-1 channel — no new op)
+then split back into `gws[nm,D]` + `gbs[nm]` on export. The magnitude transformer-gate
+stays inference-only, so q is silent until the substrate earns logit magnitude — by design.
+
 ## Build & Run
 
 Three unified inference engines — same architecture, same constants, same output:
@@ -368,6 +389,11 @@ Q inherits from and unifies several projects into a single resonant architecture
 - **Minhyeok Lee** — [Emergence of Self-Identity in AI](https://arxiv.org/abs/2411.18530) — mathematical framework for self-identity that Q implements through somatic chambers and contrastive projection
 
 All active development is in Q. The frozen repos preserve the evolutionary history.
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0**.  
+See [LICENSE](LICENSE) for the full text.
 
 ---
 
