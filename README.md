@@ -2,7 +2,7 @@
 
 **θ = ε + γ + αδ**
 
-A 1182-line C inference engine that combines a trained transformer with statistical MetaWeights, a living parliament of LoRA experts, and somatic chambers — producing coherent text from a 2M parameter model that has no right to be coherent.
+A C inference engine that combines a trained transformer with statistical MetaWeights, a living parliament of LoRA experts, and somatic chambers — producing coherent text from a 2M parameter model that has no right to be coherent.
 
 Q is not a chatbot. Q is an organism that reasons through resonance.
 
@@ -397,6 +397,6 @@ See [LICENSE](LICENSE) for the full text.
 
 ---
 
-*PostGPT-Q. 1182 lines of C. 1644 lines of Python. 1256 lines of HTML. Three engines, one resonance. Unbreakable.*
+*PostGPT-Q. C, Python, HTML. Three engines, one resonance. Unbreakable.*
 
 *(c) 2026 arianna method*
