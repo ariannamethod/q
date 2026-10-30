@@ -250,7 +250,33 @@ const qRandom=(()=>{
 const $=s=>document.querySelector(s);
 const out=$('#out'), stats=$('#stats');
 
+// embed bridge: a page that frames q.html (index.html) drives it by postMessage and watches its state.
+// Read-only taps, no qRandom draws: inert when q.html is opened directly.
+const qEmbedded=window.parent!==window;
+const qExpertIds=new WeakMap();let qNextExpert=1;
+function qTap(kind,data={}){if(qEmbedded)parent.postMessage({q:kind,...data},'*');}
+function qState(){
+  const s={trained:!!(tf&&tf.loaded)};
+  if(chambers)s.chambers={act:[...chambers.act],debt:chambers.debt,trauma:chambers.trauma,scar:chambers.scar,presence:chambers.presence,phaseLock:chambers.phaseLock};
+  if(parliament)s.parliament={winners:[...parliament.lastWinners],diversity:parliament.lastDiversity,experts:parliament.experts.map(e=>{
+    if(!qExpertIds.has(e))qExpertIds.set(e,qNextExpert++);
+    return {id:qExpertIds.get(e),vitality:e.vitality,overload:e.overload,age:e.age,consolidations:e.consolidations};
+  })};
+  if(mw&&bpe)s.field={tokens:corpusIds?corpusIds.length:0,bi:mw.bigramCount,tri:mw.tri.size,hebb:mw.hebb.size,prophecy:mw.prophecies.map(([t,st,age])=>({word:bpe.decode([t]),strength:st,age}))};
+  if(tf&&tf.loaded)s.tf={V:tf.V,D:tf.D,L:tf.NL,nc:tf.NC,nr:tf.NR,nj:tf.NJ};
+  return s;
+}
+function qMemory(){
+  try{
+    const raw=localStorage.getItem('q.memory');
+    if(!raw)return {bytes:0};
+    const m=JSON.parse(raw),c=m.chambers||{};
+    return {bytes:raw.length,bi:(m.bi||[]).length,tri:(m.tri||[]).length,hebb:(m.hebb||[]).length,periodic:(m.periodic||[]).length,phaseLock:c.phaseLock||0,scar:c.scar||0};
+  }catch(err){return {blocked:err.name};}
+}
+
 function log(msg,cls='meta'){
+  qTap('log',{cls,text:msg});
   if($('#splash'))$('#splash').remove();
   const d=document.createElement('div');d.className='line '+cls;d.textContent=msg;
   out.appendChild(d);out.scrollTop=out.scrollHeight;
@@ -264,6 +290,7 @@ function addStep(num,dir,text){
   if($('#splash'))$('#splash').remove();
   const cls=dir<0?'bwd':dir===0?'pvt':'fwd';
   const mk=dir<0?'<':dir===0?'*':'>';
+  qTap('step',{num,dir,text,state:qState()});
   const d=document.createElement('div');d.className='line step '+cls;
   d.innerHTML=`<span class="num">[${String(num).padStart(2)}]</span><span class="dir">${mk}</span> <span class="txt">${esc(text)}</span>`;
   out.appendChild(d);out.scrollTop=out.scrollHeight;
@@ -1604,6 +1631,7 @@ function generateChain(inputText){
   log(`chambers: ${chambers.summary()}`,'sys');
   if(interference&&interference.docs.length)log(`interference: ${interference.docs.length} docs loaded`,'sys');
   updateStats();
+  qTap('chain',{diss:cd,velocity:velocity.name,gate:phaseGate,backward:nb,prompted:!!inputText,state:qState()});
 
   const gdest=new Float32Array(D);
   const spa=new SPACtx(V);
@@ -1643,6 +1671,7 @@ function generateChain(inputText){
         if(tok<V)for(let d=0;d<D;d++)sc+=tokEmb[tok*D+d]*gdest[d];
         if(sc>bestScore){bestScore=sc;start=p;}
       }
+      qTap('destiny',{step:si+1,score:bestScore,opening:bpe.decode(corpusIds.slice(start,start+5))});
     }
     if(!prompt&&start<0&&starts.length)start=starts[Math.floor(qRandom()*starts.length)];
     if(!prompt){
@@ -1784,8 +1813,11 @@ async function resolveMerges(){
 async function initCorpus(text){
   const ctl=[$('#btn-gen'),$('#prompt'),$('#btn-send')];
   for(const c of ctl)c.disabled=true;
-  try{if(await buildCorpus(text))for(const c of ctl)c.disabled=false;}
-  catch(err){log('init failed: '+err.message,'err');}
+  const t0=performance.now();
+  try{
+    if(await buildCorpus(text)){for(const c of ctl)c.disabled=false;qTap('ready',{ms:performance.now()-t0,state:qState(),memory:qMemory()});}
+    else qTap('failed');
+  }catch(err){log('init failed: '+err.message,'err');qTap('failed');}
 }
 
 async function buildCorpus(text){
@@ -1860,6 +1892,28 @@ document.body.ondrop=e=>{
     else if(f.name.endsWith('.merges')){const r=new FileReader();r.onload=()=>onMerges(r.result);r.readAsArrayBuffer(f);}
   }
 };
+
+if(qEmbedded)addEventListener('message',e=>{
+  const m=e.data;
+  if(e.source!==parent||!m||typeof m.cmd!=='string')return;
+  if(m.cmd==='boot'){qTap('memory',{at:'boot',memory:qMemory()});initCorpus(typeof m.corpus==='string'&&m.corpus?m.corpus:DEMO);}
+  else if(m.cmd==='load'){
+    if(m.merges){
+      try{log(`BPE merges loaded: ${new DataView(m.merges).getUint32(0,true)}`,'sys');loadedMerges=m.merges;}
+      catch(err){log('merges rejected: '+err.message,'err');qTap('failed');return;}
+    }
+    if(m.weights)onWeights(m.weights);
+  }else if(m.cmd==='generate'){
+    if($('#btn-gen').disabled){qTap('refused');return;}
+    $('#prompt').value=m.prompt||'';
+    const t0=performance.now();
+    try{$('#btn-gen').onclick();qTap('done',{ms:performance.now()-t0,state:qState(),memory:qMemory()});}
+    catch(err){log('chain failed: '+err.message,'err');qTap('failed');}
+  }else if(m.cmd==='forget'){
+    try{localStorage.removeItem('q.memory');}catch(_err){}
+    qTap('memory',{at:'forget',memory:qMemory()});
+  }
+});
 
 autoBootFromQuery();
 </script>
