@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PostGPT-Q</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Instrument+Serif:ital@0;1&display=swap');
-
 :root {
   --void: #06060a;
   --surface: #0c0c14;
@@ -1191,7 +1189,8 @@ function saveBrowserMemory(){
   if(parliament){
     data.parliament={lastK:parliament.lastK,lastEntropy:parliament.lastEntropy,lastDiversity:parliament.lastDiversity,lastWinners:[...parliament.lastWinners],lastBirths:parliament.lastBirths||0,lastDeaths:parliament.lastDeaths||0,lastConsolidations:parliament.lastConsolidations||0};
   }
-  localStorage.setItem('q.memory',JSON.stringify(data));
+  try{localStorage.setItem('q.memory',JSON.stringify(data));}
+  catch(err){log(`  memory not saved: ${err.name}`,'err');}
 }
 
 function loadBrowserMemory(){
@@ -1781,7 +1780,15 @@ async function resolveMerges(){
   const b=new BPE();b.loadBinary(loadedMerges);return b;
 }
 
+// controls follow the outcome: off while the field is rebuilt, on only after a chain was spoken from it
 async function initCorpus(text){
+  const ctl=[$('#btn-gen'),$('#prompt'),$('#btn-send')];
+  for(const c of ctl)c.disabled=true;
+  try{if(await buildCorpus(text))for(const c of ctl)c.disabled=false;}
+  catch(err){log('init failed: '+err.message,'err');}
+}
+
+async function buildCorpus(text){
   corpusText=text;
   out.innerHTML='';
   log('PostGPT-Q — Resonant Reasoning Engine (JS)','sys');
@@ -1793,6 +1800,7 @@ async function initCorpus(text){
   }
   if(bpe)corpusIds=bpe.encode(text);
   else{bpe=new BPE();corpusIds=bpe.learnFromCorpus(text,1024);}
+  if(corpusIds.length<2){log(`corpus gave ${corpusIds.length} tokens: nothing to build a field from`,'err');return false;}
   log(`  ${bpe.merges.length} merges (${loadedMerges?'q.merges':'learned from this corpus'}), vocab=${bpe.vocabSize}, ${corpusIds.length} tokens`);
   log('[2] MetaWeights...');
   mw=new MetaWeights();mw.build(corpusIds,bpe.vocabSize);
@@ -1814,7 +1822,7 @@ async function initCorpus(text){
   $('#mode-badge').className=tf&&tf.loaded?'trained':'';
   log('');log('========== 12 BIDIRECTIONAL STEPS ==========','sys');log('');
   generateChain(null);
-  $('#btn-gen').disabled=false;$('#prompt').disabled=false;$('#btn-send').disabled=false;
+  return true;
 }
 
 async function autoBootFromQuery(){
