@@ -499,6 +499,7 @@ const $ = s => document.querySelector(s);
 const CH = [['Fear', 'fear'], ['Love', 'love'], ['Rage', 'rage'], ['Void', 'void'], ['Flow', 'flow'], ['Complexity', 'cmplx']];
 const fmt = n => new Intl.NumberFormat('en').format(Math.round(n));
 const pct = x => Math.round(x * 100);
+const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const store = {
   get: k => { try { return localStorage.getItem(k); } catch (_) { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} },
@@ -592,7 +593,7 @@ function chord(act) {
   const sum = act.reduce((a, b) => a + b, 0) || 1;
   return CH.map(([, k], i) => `<i style="width:${(act[i] / sum * 100).toFixed(1)}%;background:var(--${k})"></i>`).join('');
 }
-const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function renderChain(c, ms) {
   const rows = new Map();
@@ -608,7 +609,7 @@ function renderChain(c, ms) {
     li.className = 'step ' + cls;
     li.style.setProperty('--i', i);
     const empty = !text || text === '[...]';
-    li.innerHTML = `<span class="n">${String(s.num).padStart(2, '0')}</span><span class="d" title="${word}"><span aria-hidden="true">${glyph}</span><span class="sr">${word}</span></span>` +
+    li.innerHTML = `<span class="n">${String(num(s.num)).padStart(2, '0')}</span><span class="d" title="${word}"><span aria-hidden="true">${glyph}</span><span class="sr">${word}</span></span>` +
       `<p class="t${empty ? ' empty' : ''}">${empty ? 'No sentence: every candidate was too weak to keep.' : esc(text)}</p>` +
       `<div class="meta"><span class="chord" title="chamber mix">${s.state.chambers ? chord(s.state.chambers.act) : ''}</span>${tags.map(t => `<span class="tag">${TAG[t]}</span>`).join('')}</div>`;
     ol.appendChild(li);
@@ -646,7 +647,7 @@ function renderParliament(st) {
   knownIds = ids;
   $('#cells').innerHTML = P.experts.map(e => {
     const d = Math.round(14 + 26 * Math.max(0, Math.min(1, e.vitality)));
-    return `<span class="cell${won.has(e.id) ? ' won' : ''}${newIds.has(e.id) ? ' born' : ''}" style="width:${d}px;height:${d}px;border-width:${2 + Math.round(4 * e.overload)}px" title="expert ${e.id}: vitality ${e.vitality.toFixed(2)}, overload ${e.overload.toFixed(2)}, age ${e.age}, ${e.consolidations} consolidations"></span>`;
+    return `<span class="cell${won.has(e.id) ? ' won' : ''}${newIds.has(e.id) ? ' born' : ''}" style="width:${d}px;height:${d}px;border-width:${2 + Math.round(4 * e.overload)}px" title="expert ${e.id}: vitality ${e.vitality.toFixed(2)}, overload ${e.overload.toFixed(2)}, age ${num(e.age)}, ${num(e.consolidations)} consolidations"></span>`;
   }).join('');
   $('#cells').setAttribute('aria-label', `${P.experts.length} experts, ${P.winners.length} voted on the last token`);
   const cons = P.experts.reduce((a, e) => a + e.consolidations, 0);
@@ -661,7 +662,7 @@ function renderProphecy(field) {
   const max = Math.max(1e-9, ...items.map(i => i.strength));
   $('#proph').innerHTML = items.map(p => {
     const w = p.word.trim() ? p.word.trim() : JSON.stringify(p.word);
-    return `<li class="prop"><span class="w">${esc(w)}</span><span class="track"><span class="fill" style="display:block;width:${(p.strength / max * 100).toFixed(0)}%"></span></span><span class="age">age ${p.age}</span></li>`;
+    return `<li class="prop"><span class="w">${esc(w)}</span><span class="track"><span class="fill" style="display:block;width:${(p.strength / max * 100).toFixed(0)}%"></span></span><span class="age">age ${num(p.age)}</span></li>`;
   }).join('');
   $('#proph-note').textContent = field.prophecy.length
     ? `${field.prophecy.length} open expectations. Each one ages while it waits, fades slowly and collapses when the token arrives; the unresolved ones push the next tokens toward them.`
@@ -681,7 +682,7 @@ function renderMode(st) {
   $('#mode').textContent = st.trained ? 'trained' : 'field';
   if (st.trained) {
     ui.wake.textContent = 'Weights loaded';
-    $('#wake-text').innerHTML = `<p>The transformer is speaking: ${st.tf.L} layers, vocabulary ${fmt(st.tf.V)}, width ${st.tf.D}, ${st.tf.nr} RRPRAM and ${st.tf.nj} Janus echo heads. Destiny and the parliament now read real embeddings.</p><p>The field still comes from the first 16 KB of q.txt, while the native engines count all 439 KB of it.</p>`;
+    $('#wake-text').innerHTML = `<p>The transformer is speaking: ${num(st.tf.L)} layers, vocabulary ${fmt(st.tf.V)}, width ${num(st.tf.D)}, ${num(st.tf.nr)} RRPRAM and ${num(st.tf.nj)} Janus echo heads. Destiny and the parliament now read real embeddings.</p><p>The field still comes from the first 16 KB of q.txt, while the native engines count all 439 KB of it.</p>`;
     $('#pick-wrap').hidden = true;
     $('#wake-note').textContent = '';
   }
@@ -715,7 +716,7 @@ function renderDestiny(c) {
   const head = flat
     ? '<p class="note">Without weights every one of the 50 candidate openings scores 0 against the destiny vector, so each forward opening is a uniform pick:</p>'
     : '<p class="note">Each forward step drew 50 candidate openings and kept the one closest to the destiny vector:</p>';
-  box.innerHTML = head + '<ul class="plain">' + c.destiny.map(d => `<li>Step ${d.step}: <span style="font-family:var(--serif)">“${esc(d.opening.trim())}…”</span>${flat ? '' : ` <span class="note">score ${d.score.toFixed(2)}</span>`}</li>`).join('') + '</ul>';
+  box.innerHTML = head + '<ul class="plain">' + c.destiny.map(d => `<li>Step ${num(d.step)}:<span style="font-family:var(--serif)">“${esc(d.opening.trim())}…”</span>${flat ? '' : ` <span class="note">score ${d.score.toFixed(2)}</span>`}</li>`).join('') + '</ul>';
 }
 
 function renderMemory(mem) {
@@ -785,6 +786,7 @@ $('#pick').addEventListener('change', async e => {
   $('#wake-note').textContent = '';
   sendWeights(await wf.arrayBuffer(), await mf.arrayBuffer());
 });
+window.__qtest = { esc, num, renderProphecy }; // ponytail: test hook for page_check HX probes
 })();
 </script>
 </body>

@@ -252,6 +252,28 @@ try {
     check(`B11 contrast ${dark ? 'dark' : 'light'}`, ok, JSON.stringify(ratios));
     await done();
   }
+
+  // HX hostile engine fields and bridge pinning
+  await fresh(); await p.goto(`${FILE}/index.html`);
+  await p.waitFor(MODE('field'), 15000);
+  const hx0 = await p.ev(`__qtest.esc("'<x>\\"&")`);
+  check('HX0 esc covers quotes and angle brackets', hx0 === '&#39;&lt;x&gt;&quot;&amp;', JSON.stringify(hx0));
+  const hx1 = await p.ev(`(() => {
+    __qtest.renderProphecy({ prophecy: [{ word: '<img src=x onerror=window.__pwned=1>', strength: 1, age: '<b>7</b>' }] });
+    const h = document.querySelector('#proph').innerHTML;
+    return [window.__pwned === undefined, h.includes('&lt;img'), !/<img/.test(h), /age 0</.test(h)];
+  })()`);
+  check('HX1 hostile prophecy fields render inert', Array.isArray(hx1) && hx1.every(Boolean), JSON.stringify(hx1));
+  const hx2 = await p.ev(`(() => {
+    const n0 = document.querySelectorAll('#chain .step').length;
+    window.postMessage({ q: 'step', num: '<img src=x onerror=window.__pwned2=1>', dir: 1, text: 'x', state: {} }, '*');
+    return new Promise(r => setTimeout(() => r([window.__pwned2 === undefined, document.querySelectorAll('#chain .step').length === n0]), 400));
+  })()`);
+  check('HX2 forged message from a foreign source is ignored', Array.isArray(hx2) && hx2.every(Boolean), JSON.stringify(hx2));
+  const rawSrc = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const rawHits = (rawSrc.match(/\$\{(?:s\.num|e\.age|e\.consolidations|p\.age|d\.step|st\.tf\.[A-Za-z]+)\b[^}]*\}/g) || []);
+  check('HX3 raw engine fields are wrapped', rawHits.length === 0, JSON.stringify(rawHits));
+  await done();
 } finally { srv.close(); await b.close(); }
 console.log(failed ? `${failed} failed` : 'all passed');
 process.exit(failed ? 1 : 0);
