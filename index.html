@@ -745,13 +745,13 @@ function renderConsequence(c) {
 
 function renderDestiny(c) {
   const box = $('#dest');
-  if (c.info && c.info.prompted) { box.innerHTML = '<p class="note">This chain was anchored to your words, so every step started from them and destiny drew no openings. Let q speak on its own to watch destiny choose.</p>'; return; }
-  if (!c.destiny.length) { box.innerHTML = '<p class="note">No forward step drew from destiny in this chain.</p>'; return; }
+  const lead = c.info && c.info.prompted ? '<p class="note">Your words anchored the pivot; backward steps drew from the corpus and forward steps asked destiny as usual.</p>' : '';
+  if (!c.destiny.length) { box.innerHTML = lead + '<p class="note">No forward step drew from destiny in this chain.</p>'; return; }
   const flat = c.destiny.every(d => d.score === 0);
   const head = flat
     ? '<p class="note">Without weights every one of the 50 candidate openings scores 0 against the destiny vector, so each forward opening is a uniform pick:</p>'
     : '<p class="note">Each forward step drew 50 candidate openings and kept the one closest to the destiny vector:</p>';
-  box.innerHTML = head + '<ul class="plain">' + c.destiny.map(d => `<li>Step ${num(d.step)}:<span style="font-family:var(--serif)">“${esc(d.opening.trim())}…”</span>${flat ? '' : ` <span class="note">score ${d.score.toFixed(2)}</span>`}</li>`).join('') + '</ul>';
+  box.innerHTML = lead + head + '<ul class="plain">' + c.destiny.map(d => `<li>Step ${num(d.step)}:<span style="font-family:var(--serif)">“${esc(d.opening.trim())}…”</span>${flat ? '' : ` <span class="note">score ${d.score.toFixed(2)}</span>`}</li>`).join('') + '</ul>';
 }
 
 function renderMemory(mem) {
