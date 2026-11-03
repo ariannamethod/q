@@ -159,6 +159,8 @@ try {
   await p.waitFor(`document.querySelector('#status').textContent==='q answered.'`, 15000);
   const cq = await p.ev(`[!document.querySelector('#cq-sec').hidden,document.querySelector('#cq').textContent,document.querySelector('#dest').textContent]`);
   check('B2 prompt: consequences shown, destiny anchored', cq[0] && /scar \+/.test(cq[1]) && cq[2].includes('anchored'), `"${cq[1].slice(0, 260)}"`);
+  const pts = await p.ev(`__qmsg.filter(m=>m.q==='step').slice(-12).map(m=>m.text)`);
+  check('B2c prompted chain is not twelve clones', new Set(pts).size >= 3, `distinct=${new Set(pts).size}/${pts.length}`);
   await p.ev(`document.querySelector('#alone').click()`);
   await p.waitFor(`document.querySelector('#status').textContent==='q spoke on its own.'`, 15000);
   const dst = await p.ev(`document.querySelector('#dest').textContent`);

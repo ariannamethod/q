@@ -1654,7 +1654,7 @@ function generateChain(inputText){
       if(seedTok>=0&&seedTok<V)for(let d=0;d<D;d++)gdest[d]=0.97*gdest[d]+0.03*tokEmb[seedTok*D+d];
     }
     let prompt=null,usedInterf=false;
-    if(inputText){
+    if(inputText&&si===nb){ // the prompt anchors only the pivot; backward steps keep the corpus, forward steps keep destiny
       prompt=anchoredPromptFromInput(inputText,4);
     }
     if(!prompt&&interference&&interference.docs.length&&qRandom()<Math.max(0.05,Math.min(0.5,0.3+velocity.interfBonus))){
