@@ -375,15 +375,28 @@ class BPE {
     return new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(bytes));
   }
 
-  isBoundary(id){
-    const b=this.vocabBytes[id];if(!b)return false;
+  // byte offset where a sentence ends inside token id, -1 if none: after a [.!?] run and the quotes/brackets closing it,
+  // when the token ends there or whitespace follows. BPE fuses an end with the next opening (". It", ".\n\nThe "), so the
+  // token that stops a sentence can carry the first bytes of the next one past this offset.
+  boundaryEnd(id){
+    const b=this.vocabBytes[id];if(!b)return -1;
+    const term=c=>c===46||c===33||c===63,closer=c=>c===34||c===39||c===41||c===93||c===125;
     for(let i=0;i<b.length;i++){
-      if(b[i]===46||b[i]===33||b[i]===63){
-        if(i===b.length-1)return true;
-        if(b[i+1]===32||b[i+1]===10||b[i+1]===13)return true;
-      }
+      if(!term(b[i]))continue;
+      let j=i+1;
+      while(j<b.length&&(term(b[j])||closer(b[j])))j++;
+      if(j===b.length||b[j]===32||b[j]===10||b[j]===13)return j;
+      i=j-1;
     }
-    return false;
+    return -1;
+  }
+  isBoundary(id){return this.boundaryEnd(id)>=0;}
+  decodeSentence(ids){
+    const bytes=[];
+    for(const id of ids){const b=this.vocabBytes[id];if(b)bytes.push(...b);}
+    const last=ids.length?ids[ids.length-1]:-1,e=this.boundaryEnd(last);
+    if(e>=0)bytes.length-=this.vocabBytes[last].length-e;
+    return new TextDecoder('utf-8',{fatal:false}).decode(new Uint8Array(bytes));
   }
 
   startsWithSpace(id){
@@ -1725,7 +1738,7 @@ function generateChain(inputText){
       }
     }
 
-    const text=bpe.decode(bestOut.slice(bpe.displayStartIndex(bestOut))).replace(/^\s+/,'');
+    const text=bpe.decodeSentence(bestOut.slice(bpe.displayStartIndex(bestOut))).replace(/^\s+/,'');
     chainIds.push(bestOut);chainLens.push(bestOut.length);
     if(bestOut.length<5||(bestSc<0.01&&bestOut.length<8)){
       addStep(si+1,dir,'[...]');
@@ -1761,7 +1774,7 @@ function generateChain(inputText){
       const oldSc=coherenceScore(chainIds[weakIdx])+0.6*surfaceCoherenceScore(chainIds[weakIdx]);
       if(newSc>oldSc*0.7||rOut.length>chainIds[weakIdx].length){ // accept if reasonable
         chainIds[weakIdx]=rOut;chainLens[weakIdx]=rOut.length;
-        const rText=bpe.decode(rOut);
+        const rText=bpe.decodeSentence(rOut);
         const dir=weakIdx<nb?-1:weakIdx===nb?0:1;
         addStep(weakIdx+1,dir,rText+' {reseeded}');
         chambers.feel(rText,periodic);
