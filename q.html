@@ -435,6 +435,11 @@ class BPE {
     }
     return true;
   }
+  // text cut after this token leaves no word open: whitespace ends it, so nothing sampled next can fuse with the word before
+  endsOnSpace(id){
+    const b=this.vocabBytes[id],c=b&&b.length?b[b.length-1]:-1;
+    return c===32||(c>=9&&c<=13);
+  }
   isLowerFragmentStart(id){
     const b=this.vocabBytes[id];
     return !!(b&&b.length&&b[0]!==32&&b[0]>=97&&b[0]<=122);
@@ -1335,15 +1340,18 @@ function promptFocusScale(hasTf,plen,step){
   return 1.0;
 }
 function anchoredPromptFromInput(text,maxTokens=4){
-  const inpIds=bpe.encode(text);
+  const inpIds=bpe.encode(text+' '); // the input comes trimmed: the space closes its last word, else the first sampled token fuses with it ("you"+"s " -> "yous ")
   if(!inpIds.length)return null;
+  const body=inpIds[inpIds.length-1]===32?inpIds.length-1:inpIds.length; // a bare space token at the tail is the one appended above, no place to start
   let start=0;
   if(!bpe.isCleanSeedToken(inpIds[start])){
     let found=false;
-    for(let i=1;i<inpIds.length;i++)if(bpe.startsWithSpace(inpIds[i])&&bpe.isCleanSeedToken(inpIds[i])){start=i;found=true;break;}
-    if(!found)for(let i=1;i<inpIds.length;i++)if(bpe.startsWithSpace(inpIds[i])){start=i;break;}
+    for(let i=1;i<body;i++)if(bpe.startsWithSpace(inpIds[i])&&bpe.isCleanSeedToken(inpIds[i])){start=i;found=true;break;}
+    if(!found)for(let i=1;i<body;i++)if(bpe.startsWithSpace(inpIds[i])){start=i;break;}
   }
-  return inpIds.slice(start,Math.min(inpIds.length,start+maxTokens));
+  let end=Math.min(inpIds.length,start+maxTokens);
+  while(end<inpIds.length&&end-start<maxTokens*8&&!bpe.endsOnSpace(inpIds[end-1]))end++; // the window ends on a space, never inside a word of the input
+  return inpIds.slice(start,end);
 }
 function earlySentenceQuality(ids){
   if(!ids.length)return-1;
