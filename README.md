@@ -1,4 +1,4 @@
-# PostGPT-Q — Resonant Reasoning Engine 
+# Q — Resonant Reasoning Engine 
 
 **θ = ε + γ + αδ**
 
